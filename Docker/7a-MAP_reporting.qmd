@@ -1,0 +1,658 @@
+---
+title: "MAP Report"
+title-block-banner: true
+title-block-banner-color: '#CC4945'
+subtitle: "`r format(Sys.Date(),format=c('%d-%b-%Y'))`"
+format: 
+  html:
+    self-contained: true
+    page-layout: full
+    theme: cosmo
+    toc: true
+    toc_float: false
+editor: visual
+execute: 
+  warning: false
+  echo: false
+params:
+  runid: "Default"
+  working_dir: "."
+  marker: "Unknown"
+  ampsize: 0
+  numreps: 0
+  param_file: "Default"
+---
+
+```{css,echo=FALSE}
+
+.title {
+  font-size: 50px;
+  color: #f1f1f1;
+  font-family: Arial;
+}
+
+.section-box {
+  background-color: #f8f9fa;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: inset 0 2px 5px rgba(0,0,0,0.05);
+  margin-bottom: 20px;
+}
+
+.text-center {
+  text-align: center;
+}
+
+.scrollme {
+  max-height: 140px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 12px;
+}
+```
+
+```{r}
+#| label: setup
+#| include: true
+#| echo: false
+#| warning: false
+
+# Import aarguments
+runid <- params$runid
+wkdir <- params$working_dir
+marker <- params$marker
+ampsize <- params$ampsize
+num.reps <- params$numreps
+param_file <- params$param_file
+
+# Required packages
+packages <- c(
+  "dplyr", "tidyr", "plyr", "readxl", "leaflet", "plotly", "forcats",
+  "shiny", "iNEXT", "kableExtra", "treemapify", "paletteer", "htmltools", "RColorBrewer",
+  "stringr", "knitr")
+
+# Install any packages that are not already installed
+installed_packages <- packages %in% rownames(installed.packages())
+#if(any(!installed_packages)) {
+ # install.packages(packages[!installed_packages])
+#}
+
+# Load all packages
+invisible(lapply(packages, 
+                 library, 
+                 character.only = TRUE))
+```
+
+```{r}
+#| include: true
+#| echo: false
+
+setwd(wkdir)
+
+# Paths for metabarcoding output and the parameter file. 
+metabarcoding_output <- sprintf("Metabarcoding Results - %s_%s_%s.xlsx", runid, marker, ampsize)
+
+#parameters <- list.files(pattern = "parameters*", path = "../", full.names = TRUE)
+
+# Import data by replicates
+metabarcode_data_by_replicate<-read_excel(metabarcoding_output, sheet=2)
+
+# Export as tsv
+metabarcode_data_by_replicate_tsv <- metabarcode_data_by_replicate
+names(metabarcode_data_by_replicate_tsv) <- gsub(" ", "_", names(metabarcode_data_by_replicate_tsv))
+
+write.table(metabarcode_data_by_replicate_tsv, sprintf("Metabarcoding_Results_%s_%s_%s_ByReplicate.tsv", runid, marker, ampsize), quote = F, row.names = F, sep = "\t")
+
+# Import data by sample
+metabarcode_data_by_sample<-read_excel(metabarcoding_output, sheet=1)
+
+# Export as tsv
+metabarcode_data_by_sample_tsv <- metabarcode_data_by_sample
+names(metabarcode_data_by_sample_tsv) <- gsub(" ", "_", names(metabarcode_data_by_sample_tsv))
+
+write.table(metabarcode_data_by_sample_tsv, sprintf("Metabarcoding_Results_%s_%s_%s_BySample.tsv", runid, marker, ampsize), quote = F, row.names = F, sep = "\t")
+
+# Parameters metadata for mapping and sampling summary
+mapping <- read.delim(paste("temp_mapping_", runid, "_", marker, "_", ampsize, ".txt", sep = ""), header = F, check.names = F, fill = T)
+
+
+metadata <- read_excel(param_file, sheet = if ("Bulk Sample Metadata" %in% readxl::excel_sheets(param_file)) "Bulk Sample Metadata" else "Sample Metadata") %>%
+  {
+    date_cols <- c("Collection Start Date (D-Mmm-YY)", "Collection End Date (D-Mmm-YY)")
+    
+    # Check if both columns exist and contain at least one non-NA value
+    if (all(date_cols %in% names(.)) && any(!is.na(unlist(select(., all_of(date_cols)))))) {
+      dplyr::mutate(., across(all_of(date_cols), ~ suppressWarnings(as.Date(.x, format = "%d-%b-%y"))))
+    } else {
+      .  # Skip mutate if columns missing or empty
+    }
+  }
+
+# Combined data to get replicate information
+metabarcode_comb_data <- metabarcode_data_by_replicate%>%
+  dplyr::select(Sample, Reads, Replicate, OTU_ID, Kingdom:Species)
+
+# All samples
+sample.list <- mapping %>%
+  # Remove trailing _Rep<number>
+  mutate(sample.list = str_remove(V3, "_Rep\\d+$")) %>%
+  # Filter out unwanted sample names
+  filter(!str_detect(sample.list, regex("NEG|NEGATIVE|CONTROL|BLANK", ignore_case = TRUE))) %>%
+  # Keep unique
+  distinct(sample.list) %>%
+  pull(sample.list)
+
+# Samples with data
+sample.w.data.list <- unique(metabarcode_data_by_sample$Sample)
+
+# Number of samples with data
+sample.nos.w.data<-length(sample.w.data.list)
+```
+
+# Run Summary {.section-box .text-center}
+
+```{r}
+#| echo: false
+
+Run_ID <- runid
+
+Marker <- marker
+
+Amplicon_Size <- sprintf("%s bp", ampsize)
+
+Number_of_samples<-length(sample.list)
+
+Number_of_Technical_Replicates <- num.reps
+
+Number_of_samples_with_GPS_coordinates <- metadata %>%
+  filter(!is.na(Latitude) & !is.na(Longitude)) %>%
+  summarise(n = n_distinct(Sample)) %>%
+  pull(n)
+
+Number_of_samples_with_collection_dates <- metadata %>%
+  filter(if_any(starts_with("Collection"), ~ !is.na(.))) %>%
+  summarise(n = n_distinct(Sample)) %>%
+  pull(n)
+
+Total_unique_OTUs_detected<-metabarcode_data_by_sample%>%
+    dplyr::summarise(Unique_OTUs = n_distinct(OTU_ID))
+
+Mean_OTUs_per_sample<-metabarcode_comb_data%>%
+  group_by(Sample)%>%
+  dplyr::summarise(otu_counts=n_distinct(OTU_ID))%>%
+  dplyr::summarise(Mean_OTUs_per_sample=round(mean(otu_counts,na.rm=T),0))
+
+Max_OTUs_per_sample<-metabarcode_comb_data%>%
+  group_by(Sample)%>%
+  dplyr::summarise(otu_counts=n_distinct(OTU_ID))%>%
+  dplyr::summarise(Max_OTUs_per_sample=max(otu_counts,na.rm=T))
+
+Min_OTUs_per_sample<-metabarcode_comb_data%>%
+  group_by(Sample)%>%
+  dplyr::summarise(otu_counts=n_distinct(OTU_ID))%>%
+  dplyr::summarise(Min_OTUs_per_sample=min(otu_counts,na.rm=T))
+
+collection_period <- metadata %>%
+  {
+    start_col <- "Collection Start Date"
+    end_col   <- "Collection End Date"
+    
+    # Check if both date columns exist and contain any non-NA values
+    if (all(c(start_col, end_col) %in% names(.)) &&
+        any(!is.na(.[[start_col]])) &&
+        any(!is.na(.[[end_col]]))) {
+      
+      summarise(.,
+                collection_period_start = suppressWarnings(min(as.Date(.[[start_col]]), na.rm = TRUE)),
+                collection_period_end   = suppressWarnings(max(as.Date(.[[end_col]]), na.rm = TRUE))) %>%
+        mutate(collection_period = ifelse(
+          is.na(collection_period_start) | is.na(collection_period_end),
+          NA,
+          paste(collection_period_start, "to", collection_period_end)
+        )) %>%
+        pull(collection_period)
+      
+    } else {
+      NA_character_  # If missing or empty, return NA cleanly
+    }
+  }
+
+summary_table <- data.frame(
+  Run_ID,
+  Marker,
+  Amplicon_Size,
+  Number_of_samples,
+  Number_of_Technical_Replicates,
+  Number_of_samples_with_GPS_coordinates,
+  Number_of_samples_with_collection_dates,
+  Collection_period = collection_period,
+  Mean_OTUs_per_sample,
+  Max_OTUs_per_sample,
+  Min_OTUs_per_sample
+) %>%
+  mutate(across(everything(), as.character)) %>%
+  rename_with(~ gsub("_", " ", .x)) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Category",
+    values_to = "Value"
+  )
+```
+
+```{r}
+#| echo: false
+
+# Generating the interactive summary table
+summary_table|>
+  kbl(col.names = NULL) %>%
+   kable_styling(bootstrap_options = c("hover", "condensed", "responsive"))
+```
+
+# Map of sampling locations {.section-box .text-center}
+
+```{r}
+#| echo: false
+#| fig-width: 8
+#| fig-height: 6
+#| column: page
+
+if (!("Latitude" %in% names(metadata)) ||
+    !("Longitude" %in% names(metadata)) ||
+    all(is.na(metadata$Latitude)) ||
+    all(is.na(metadata$Longitude))) {
+
+  # No coordinates: show a styled HTML message box instead of a map
+  htmltools::HTML('
+    <div style="
+      margin: 30px auto;
+      padding: 20px;
+      max-width: 500px;
+      background-color: #fff3cd;
+      border: 1px solid #ffeeba;
+      border-radius: 10px;
+      color: #856404;
+      font-size: 16px;
+      text-align: center;
+      font-weight: bold;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+    ">
+      ⚠️ No sample coordinates provided.
+    </div>
+  ')
+
+} else {
+
+  # Make sure Latitude/Longitude are numeric
+  metadata <- metadata %>%
+    dplyr::mutate(
+      Latitude = as.numeric(Latitude),
+      Longitude = as.numeric(Longitude)
+    ) %>%
+    dplyr::filter(!is.na(Latitude) & !is.na(Longitude))
+
+  # Only create markers if at least one valid row exists
+  if (nrow(metadata) == 0) {
+    htmltools::HTML('
+      <div style="
+        margin: 30px auto;
+        padding: 20px;
+        max-width: 500px;
+        background-color: #fff3cd;
+        border: 1px solid #ffeeba;
+        border-radius: 10px;
+        color: #856404;
+        font-size: 16px;
+        text-align: center;
+        font-weight: bold;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+      ">
+        ⚠️ No valid sample coordinates found.
+      </div>
+    ')
+  } else {
+
+    leaflet(metadata) %>%
+      addProviderTiles("Esri.WorldImagery", group = "ESRI_WorldImage") %>%
+      addProviderTiles("Esri.WorldTopoMap",
+                       options = providerTileOptions(noWrap = TRUE),
+                       group = "ESRI_WorldTopoMap") %>%
+      addCircleMarkers(
+        lng = ~Longitude,
+        lat = ~Latitude,
+        label = ~paste0(
+          "<b>Sample:</b> ", Sample, "<br>",
+          "<b>Site:</b> ", `Collection Site`, "<br>",
+          "<b>Lat:</b> ", round(Latitude, 3), "<br>",
+          "<b>Lon:</b> ", round(Longitude, 3)
+        ),
+        labelOptions = labelOptions(
+          textsize = "11px",
+          direction = "auto",
+          style = list("background" = "white", "padding" = "5px", "border-radius" = "5px")
+        ),
+        radius = 7,
+        opacity = 1,
+        color = "black",
+        weight = 1.8,
+        fillColor = "#CC4945",
+        stroke = TRUE,
+        fillOpacity = 1
+      ) %>%
+      addScaleBar(position = "topright") %>%
+      addLayersControl(
+        baseGroups = c("ESRI_WorldImage", "ESRI_WorldTopoMap"),
+        options = layersControlOptions(collapsed = FALSE)
+      )
+  }
+}
+```
+
+# Sample metadata {.section-box .text-center}
+
+::: column-page
+```{r}
+#| echo: false
+
+# Sample information
+DT::datatable(
+  metadata%>%mutate(Latitude=round(Latitude,3),
+                    Longitude=round(Longitude,3)),
+  options = list(
+    pageLength = 10,
+    autoWidth = TRUE,
+    scrollX = TRUE
+  ),
+  filter = 'top',
+  class = 'cell-border stripe'
+)
+
+```
+:::
+
+# Taxonomic Composition of Samples {.section-box .text-center}
+
+*Hover over bars for details. Double-click legend elements to isolate them. Single-click legend elements to select/deselect specific groups. Double-click on legend to reset view.*
+
+:::: column-page
+```{r}
+################ COMMON GROUPS ##########################
+# Create dictionary to match taxonomic names with common name groups
+metabarcode_data_by_sample_2 <- metabarcode_data_by_sample %>%
+  mutate(
+    category = case_when(
+      # Microbial groups
+      Kingdom == "Bacteria" ~ "Bacteria",
+      Kingdom == "Fungi" ~ "Fungi",
+      Kingdom == "Protista" ~ "Protists",
+
+      # Nematodes
+      Phylum == "Nematoda" ~ "Nematodes",
+
+      # Invertebrate groups
+      Class == "Insecta" ~ "Insects",
+      Class == "Arachnida" ~ "Arachnids",
+      Class == "Mollusca" ~ "Molluscs",
+
+      # Vertebrate groups
+      Class %in% c("Actinopterygii", "Chondrichthyes", "Sarcopterygii") ~ "Fish",
+      Class == "Aves" ~ "Birds",
+      Class == "Mammalia" ~ "Mammals",
+      Class %in% c("Reptilia", "Amphibia") ~ "Reptiles/Amphibians",
+
+      # Fallback
+      TRUE ~ "Other"
+    )
+  )
+
+# Summarize sample compositions for common taxonomic groups
+sample_composition <- metabarcode_data_by_sample_2 %>%
+  group_by(Sample, category) %>%
+  summarise(
+    n_OTUs = n_distinct(OTU_ID),
+    .groups = "drop"
+  ) %>%
+  group_by(Sample) %>%
+  mutate(
+    total_OTUs = sum(n_OTUs),
+    percent = 100 * n_OTUs / total_OTUs
+  ) %>%
+  ungroup() %>%
+  arrange(Sample, category)
+
+# Create vertical stacked bar plot
+p_stack <- ggplot(
+  sample_composition,
+  aes(
+    y = factor(Sample, levels = rev(sort(unique(Sample)))),       
+    x = percent,
+    fill = category,
+    text = paste0(
+      "<b>Sample:</b> ", Sample, "<br>",
+      "<b>Category:</b> ", category, "<br>",
+      "<b>OTUs:</b> ", n_OTUs, "<br>",
+      "<b>Percent:</b> ", sprintf("%.1f%%", percent)
+    )
+  )
+) +
+  geom_col(width = 0.8) +
+  scale_x_continuous(         
+    limits = c(0, 100),
+    expand = c(0, 0)
+  ) +
+  labs(
+    x = "Percent of OTUs",
+    y = NULL,
+    fill = "Category"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.y = element_text(size = 8),
+    panel.grid.minor = element_blank()
+  )
+
+####################### RANKS ##########################
+
+make_taxa_stackplot <- function(df, rank_col, top_n = 8, px_per_sample = 20, min_height = 400) {
+  
+  rank_col  <- rlang::ensym(rank_col)
+  rank_name <- rlang::as_string(rank_col)
+
+  # Replace NA with "unknown" 
+  df <- df %>%
+    mutate(!!rank_col := ifelse(is.na(!!rank_col), "unknown", !!rank_col))
+
+  # Count OTUs per Sample × Taxon 
+  comp <- df %>%
+    group_by(Sample, taxon = !!rank_col) %>%
+    summarise(n_OTUs = n_distinct(OTU_ID), .groups = "drop") %>%
+    mutate(taxon = trimws(taxon))
+
+  # Determine top N taxa based on # of SAMPLES 
+  top_taxa <- comp %>%
+    filter(taxon != "unknown") %>%
+    group_by(taxon) %>%
+    summarise(n_samples = n_distinct(Sample), .groups = "drop") %>%
+    arrange(desc(n_samples)) %>%
+    slice_head(n = top_n) %>%
+    pull(taxon)
+
+  # Collapse non-top taxa into "Other" 
+  comp2 <- comp %>%
+    mutate(taxon = case_when(
+      taxon == "unknown" ~ "unknown",
+      taxon %in% top_taxa ~ taxon,
+      TRUE ~ "Other"
+    )) %>%
+    group_by(Sample, taxon) %>%
+    summarise(n_OTUs = sum(n_OTUs), .groups = "drop") %>%
+    group_by(Sample) %>%
+    mutate(percent = 100 * n_OTUs / sum(n_OTUs)) %>%
+    ungroup()
+
+  comp2$taxon <- trimws(as.character(comp2$taxon))
+
+  # Fixed colour mapping with dynamic extension 
+  if (rank_name == "Kingdom") {
+    fixed_cols <- c(
+      "Animalia" = "#1E88E5",
+      "Bacteria" = "#FDD835",
+      "Fungi"    = "#8E24AA",
+      "Protista" = "#43A047"
+    )
+  } else if (rank_name == "Phylum") {
+    fixed_cols <- c(
+      "Arthropoda" = "#1E88E5",
+      "Nematoda"   = "#E53935",
+      "Mollusca"   = "#8E24AA"
+    )
+  } else if (rank_name == "Class") {
+    fixed_cols <- c(
+      "Insecta"   = "#4CAF50",
+      "Arachnida" = "#E53935"
+    )
+  } else if (rank_name == "Order") {
+    fixed_cols <- c(
+      "Lepidoptera" = "#4CAF50",
+      "Diptera"     = "#1E88E5",
+      "Coleoptera"  = "#FDD835",
+      "Hymenoptera" = "#E53935",
+      "Hemiptera"   = "#673AB7",
+      "Orthoptera"  = "#8D6E63"
+    )
+  } else {
+    fixed_cols <- c()
+  }
+
+  # Add dynamic colours for any remaining taxa
+  taxa_present <- setdiff(unique(comp2$taxon), c("Other", "unknown"))
+  extra_taxa <- setdiff(taxa_present, names(fixed_cols))
+  if (length(extra_taxa) > 0) {
+    extra_cols <- colorRampPalette(RColorBrewer::brewer.pal(8, "Set3"))(length(extra_taxa))
+    names(extra_cols) <- extra_taxa
+    fixed_cols <- c(fixed_cols, extra_cols)
+  }
+
+  # Always include Other + unknown
+  if (!"Other" %in% names(fixed_cols)) fixed_cols["Other"] <- "gray60"
+  if (!"unknown" %in% names(fixed_cols)) fixed_cols["unknown"] <- "black"
+
+  # Factor ordering 
+  ordered_main <- intersect(names(fixed_cols), taxa_present)
+  ordered_main <- setdiff(ordered_main, c("Other", "unknown"))
+  taxa_order <- c(ordered_main, "Other", "unknown")
+  taxa_order <- taxa_order[taxa_order %in% unique(comp2$taxon)]
+  comp2$taxon <- factor(comp2$taxon, levels = taxa_order)
+
+  # Dynamic height 
+  n_samples <- n_distinct(comp2$Sample)
+  plot_height <- max(min_height, n_samples * px_per_sample)
+
+  # Generate plot 
+  p <- ggplot(comp2, aes(
+      y = factor(Sample, levels = rev(sort(unique(Sample)))),
+      x = percent,
+      fill = taxon,
+      text = paste0(
+        "<b>Sample:</b> ", Sample, "<br>",
+        "<b>", rank_name, ":</b> ", taxon, "<br>",
+        "<b>OTUs:</b> ", n_OTUs, "<br>",
+        "<b>Percent:</b> ", sprintf("%.1f%%", percent)
+      )
+  )) +
+    geom_col(width = 0.8, color = "black") +
+    scale_x_continuous(expand = c(0,0)) +
+    scale_fill_manual(values = fixed_cols) +
+    labs(x = "Percent of OTUs", y = NULL, fill = rank_name) +
+    theme_minimal(base_size = 14) +
+    theme(axis.text.y = element_text(size = 8),
+          panel.grid.minor = element_blank())
+
+  ggplotly(p, tooltip = "text")
+}
+```
+
+::: panel-tabset
+### Common Groups
+
+```{r}
+#| class-output: scrollme
+n_samples <- n_distinct(sample_composition$Sample)
+px_per_sample <- 20      # adjust per sample
+min_height <- 400        # minimum height
+plot_height_common <- max(min_height, n_samples * px_per_sample)
+
+plotly::ggplotly(p_stack, tooltip = "text") %>%
+  layout(height = plot_height_common)
+```
+
+### Kingdom
+
+```{r}
+#| class-output: scrollme
+p_kingdom <- make_taxa_stackplot(metabarcode_data_by_sample_2, Kingdom)
+plotly::layout(p_kingdom, height = plot_height_common)
+```
+
+### Phylum
+
+```{r}
+#| class-output: scrollme
+p_phylum <- make_taxa_stackplot(metabarcode_data_by_sample_2, Phylum)
+plotly::layout(p_phylum, height = plot_height_common)
+```
+
+### Class
+
+```{r}
+#| class-output: scrollme
+p_class <- make_taxa_stackplot(metabarcode_data_by_sample_2, Class)
+plotly::layout(p_class, height = plot_height_common)
+```
+
+### Order
+
+```{r}
+#| class-output: scrollme
+p_order <- make_taxa_stackplot(metabarcode_data_by_sample_2, Order)
+plotly::layout(p_order, height = plot_height_common)
+```
+
+### Family
+
+```{r}
+#| class-output: scrollme
+p_family <- make_taxa_stackplot(metabarcode_data_by_sample_2, Family)
+plotly::layout(p_family, height = plot_height_common)
+```
+
+### Genus
+
+```{r}
+#| class-output: scrollme
+p_genus <- make_taxa_stackplot(metabarcode_data_by_sample_2, Genus)
+plotly::layout(p_genus, height = plot_height_common)
+```
+
+### Species
+
+```{r}
+#| class-output: scrollme
+p_species <- make_taxa_stackplot(metabarcode_data_by_sample_2, Species)
+plotly::layout(p_species, height = plot_height_common)
+```
+:::
+::::
+
+```{r}
+#| warning: false
+#| echo: false
+#| results: 'asis'
+#| column: page
+
+cat(paste0('
+<footer style="margin-top: 3em; padding-top: 1em; border-top: 1px solid #011826; text-align: center; font-size: 0.9em; color: #011826;">
+  <p> Centre for Biodiversity Genomics.<br>
+  Created: ', format(Sys.Date(), "%B %d, %Y"), '</p>
+</footer>
+'))
+```
