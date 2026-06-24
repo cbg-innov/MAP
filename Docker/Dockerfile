@@ -96,5 +96,5 @@ RUN python -m zipfile -e reflib_latest.zip .
 
 #change dir name to REFS, remove zip file.
 RUN mv sintax/ REFS/
-RUN python -m zipfile -e reference_seqs_316K.fasta.zip ./REFS/
-RUN rm reflib_latest.zip reference_seqs_316K.fasta.zip
+RUN python -m zipfile -e reference_seqs_327K.fasta.zip ./REFS/
+RUN rm reflib_latest.zip reference_seqs_327K.fasta.zip
