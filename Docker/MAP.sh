@@ -62,10 +62,10 @@ ref_seq_corr="${ref_seq_corr:-/MAP/REFS/reference_seqs_327K.fasta}" # File used 
 umi_overlap_min=0.75
 # This value is used as a multiplier with primer lengths. We recommend 0.75.
 primer_overlap_min=0.75
-#### Ib. umi trim (default is 0.125)
+#### Ib. Maximum error rate (Cutadapt parameter) for UMIs (default is 0.125, could be lower for shorter UMI sequences [e.g., < 10bp])
 error_umi1=0.125
 error_umi2=0.125
-#### Ic. primer trim
+#### Ic. Maximum error rate (Cutadapt parameter) for primers (default is 0.2)
 error_primer1=0.2
 error_primer2=0.2
 #### Id. Minimum quality score permitted with Chopper. We recommend 10 for long-read sequences with lower overall predicted quality (Oxford Nanopore) for better retention.
@@ -91,10 +91,10 @@ LR_mindiv=0.0005 #Only for long read (e.g., Oxford Nanopore) data. Parameter to 
 minsize_unoise=2 # Minimum cluster size (within samples) for paired-end reads using VSEARCH cluster_unoise
 
 #### III. Remove Contaminants
-min_rep_prop=0.7 #minimum proportion of replicate samples for OTU to be present in in order for OTUs to be retained
-high_dens_prop=0.8 #minimum proportion of replicate samples (of the replicates where OTU is actually present) for OTU sequence count within high kernel density area for OTUs to be retained
+min_rep_prop=0.65 #minimum proportion of replicate samples for OTU to be present in in order for OTUs to be retained
+high_dens_prop=0.65 #minimum proportion of replicate samples (of the replicates where OTU is actually present) for OTU sequence count within high kernel density area for OTUs to be retained
 alpha_default=0.001 #only if alpha_quantile not defined.
-alpha_quantile=0.8 #which quantile of the calculated alpha (contaminated reads floor estimate) to use? 
+alpha_quantile=0.9 #which quantile of the calculated alpha (contaminated reads floor estimate) to use? 
 k_multiplier=1 #factor multiplied by alpha to determine contaminant floor. 1 by default, less than 1 will be more permissive, over 1 will be stricter
 
 #### III. BIN identification (optional)
@@ -634,7 +634,7 @@ NR % 2 == 1 {
     # header line
     split($0, a, ";")
     print a[1]
-    suffix = (length(a) > 1 ? ";" a[2] : "")
+    suffix = (length(a) > 1 ? ";" a[2] ";" a[3] : "")
     next
 }
 {
@@ -779,7 +779,7 @@ NR % 2 == 1 {
     # header line
     split($0, a, ";")
     print a[1]
-    suffix = (length(a) > 1 ? ";" a[2] : "")
+    suffix = (length(a) > 1 ? ";" a[2] ";" a[3] : "")
     next
 }
 {

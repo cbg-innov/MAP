@@ -2,7 +2,9 @@
 
 services:
   map:
-    image: map:latest
+    build:
+      context: .
+    image: ghcr.io/nicholasbard/map:latest
     working_dir: /MAP
     volumes:
       - reflib:/MAP/REFS
