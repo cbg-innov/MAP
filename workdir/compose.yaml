@@ -2,7 +2,8 @@
 
 services:
   map:
-    image: map:latest
+    image: ghcr.io/cbg-innov/map:latest
+    pull_policy: missing
     working_dir: /MAP
     volumes:
       - reflib:/MAP/REFS
@@ -10,6 +11,6 @@ services:
     command:
       - bash
       - -lc
-      - "bash /MAP/SCRIPTS/MAP.sh --fastq /data/*.fastq.gz --params /data/parameters.xlsx --wd /data"
+      - "bash /MAP/SCRIPTS/MAP.sh --wd /data"
 volumes:
   reflib:
