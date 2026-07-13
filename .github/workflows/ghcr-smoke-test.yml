@@ -1,0 +1,26 @@
+name: GHCR push smoke test
+
+# Throwaway workflow to confirm GITHUB_TOKEN can push to ghcr.io/cbg-innov/map
+# before running the full (slow, minutes-hungry) multi-arch build. Safe to
+# delete once the 403 push issue is confirmed resolved.
+
+on: workflow_dispatch
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull, tag, and push a trivial test image
+        run: |
+          docker pull alpine:latest
+          docker tag alpine:latest ghcr.io/cbg-innov/map:permcheck
+          docker push ghcr.io/cbg-innov/map:permcheck
