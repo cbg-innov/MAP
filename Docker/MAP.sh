@@ -242,12 +242,25 @@ scripts_dir="$(make_abs "$scripts_dir")"
 ref_seq_corr="$(make_abs "$ref_seq_corr")"
 
 echo "Using fastq file: $fastq_file"
-echo "Using parameters file: $params_file" 
-echo "Using reference directory: $reference_lib_dir" 
-echo "Using working directory: $working_dir" 
-echo "Using scripts directory: $scripts_dir" 
+echo "Using parameters file: $params_file"
+echo "Using reference directory: $reference_lib_dir"
+echo "Using working directory: $working_dir"
+echo "Using scripts directory: $scripts_dir"
 echo "Sintax cutoff: $sintax_cutoff"
-echo "Using component reads (1 for yes, 0 for no): $componentreads" 
+echo "Using component reads (1 for yes, 0 for no): $componentreads"
+
+#### Fetch the BOLDdistilled sintax reference library on first use.
+
+if ! ls "$reference_lib_dir"/BOLDistilled*.fasta >/dev/null 2>&1; then
+    echo -e "\n****** BOLDdistilled sintax reference library not found in $reference_lib_dir — downloading latest..."
+    mkdir -p "$reference_lib_dir"
+    reflib_tmp="$(mktemp -d)"
+    curl -fSL https://us-sea-1.linodeobjects.com/boldistilled/sintax.zip -o "$reflib_tmp/sintax.zip"
+    python -m zipfile -e "$reflib_tmp/sintax.zip" "$reflib_tmp"
+    mv "$reflib_tmp"/sintax/* "$reference_lib_dir"/
+    rm -rf "$reflib_tmp"
+    echo "****** Reference library download complete."
+fi
 
 #######################################################################
 ############################# FUNCTIONS ###############################
@@ -1244,10 +1257,16 @@ for marker_dir in */; do
         if [ ! -f "$vsearch_db" ]; then
           #### make vsearch reference library from sintax
           echo -e "******** Creating vsearch reference library..."
+          #### Name the vsearch DB after the actual dated reference fasta
+          #### (e.g. BOLDistilled_COI_Apr2026.vsearch), not the bare $reflib prefix.
+          vsearch_name=$(basename "$db_path")
+          vsearch_name=${vsearch_name%.fasta}
+          vsearch_name=${vsearch_name%.fa}
+          vsearch_name=${vsearch_name%_SEQUENCES_sintax}
           cp $db_path $reference_lib_dir/temp_sintax_no_spaces.fasta
           sed '/^>/ s/ /_/g' "$reference_lib_dir/temp_sintax_no_spaces.fasta" > "$reference_lib_dir/temp_sintax_no_spaces.fasta.tmp" \
                 && mv "$reference_lib_dir/temp_sintax_no_spaces.fasta.tmp" "$reference_lib_dir/temp_sintax_no_spaces.fasta" || rm -f "$reference_lib_dir/temp_sintax_no_spaces.fasta.tmp"
-          vsearch --makeudb_usearch $reference_lib_dir/temp_sintax_no_spaces.fasta --output $reference_lib_dir/"$reflib".vsearch
+          vsearch --makeudb_usearch $reference_lib_dir/temp_sintax_no_spaces.fasta --output $reference_lib_dir/"$vsearch_name".vsearch
           vsearch_db=$(ls -d $reference_lib_dir/"$reflib"*vsearch)
           rm $reference_lib_dir/temp_sintax_no_spaces.fasta
         fi
