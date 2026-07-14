@@ -1,6 +1,6 @@
 name: Build and publish MAP image
 
-# Builds a single multi-arch (linux/amd64 + linux/arm64) image and pushes to ghcr.io/cbg-innov/map.  
+# Builds a single multi-arch (linux/amd64 + linux/arm64) image and pushes to ghcr.io/cbg-innov/map.
 
 on:
   push:
@@ -29,6 +29,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Free up disk space on runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -a -f
+          df -h /
 
       - name: Set up QEMU (for arm64 emulation)
         uses: docker/setup-qemu-action@v3
