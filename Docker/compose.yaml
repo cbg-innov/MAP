@@ -2,14 +2,13 @@
 
 services:
   map:
-    image: map:latest
+    build:
+      context: .
+    image: ghcr.io/cbg-innov/map:latest
     working_dir: /MAP
     volumes:
       - reflib:/MAP/REFS
       - ${MAP_DATA:-./data}:/data
-    command:
-      - bash
-      - -lc
-      - "bash /MAP/SCRIPTS/MAP.sh --fastq /data/*.fastq.gz --params /data/parameters.xlsx --wd /data"
+    command: ["sleep", "infinity"]
 volumes:
   reflib:

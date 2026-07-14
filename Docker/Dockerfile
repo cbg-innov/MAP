@@ -90,11 +90,8 @@ SHELL ["micromamba", "run", "-n", "map", "/bin/bash", "-c"]
 # iNEXT installation doesn't work well with mamba. Install it from CRAN.
 RUN R -e "install.packages('iNEXT', repos='https://cloud.r-project.org', type='source')"
 
-#Download and unzip latest BOLDDistilled lib (curl needs map environment running, hence placement here at the end)
-RUN curl https://us-sea-1.linodeobjects.com/boldistilled/sintax.zip --output reflib_latest.zip
-RUN python -m zipfile -e reflib_latest.zip .
-
-#change dir name to REFS, remove zip file.
-RUN mv sintax/ REFS/
+# Unzip the COI sequence-correction reference (small, static, bundled with the repo).
+# MAP.sh downloads the latest copy at runtime into the persistent REFS volume on first use.
+RUN mkdir -p REFS
 RUN python -m zipfile -e reference_seqs_327K.fasta.zip ./REFS/
-RUN rm reflib_latest.zip reference_seqs_327K.fasta.zip
+RUN rm reference_seqs_327K.fasta.zip

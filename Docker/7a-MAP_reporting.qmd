@@ -136,8 +136,8 @@ metabarcode_comb_data <- metabarcode_data_by_replicate%>%
 sample.list <- mapping %>%
   # Remove trailing _Rep<number>
   mutate(sample.list = str_remove(V3, "_Rep\\d+$")) %>%
-  # Filter out unwanted sample names
-  filter(!str_detect(sample.list, regex("NEG|NEGATIVE|CONTROL|BLANK", ignore_case = TRUE))) %>%
+  # Filter out negative controls
+  filter(!(toupper(trimws(as.character(V13))) %in% c("YES", "Y", "1"))) %>%
   # Keep unique
   distinct(sample.list) %>%
   pull(sample.list)

@@ -22,7 +22,7 @@ library(patchwork)
 UMImap <- read.csv(UMImap_path, header = TRUE, sep = "\t")
 
 # Create helper column to match FASTA filenames
-UMImap$FASTA_File <- paste0(UMImap$Sample, "_", UMImap$Marker, "_", UMImap$Target.amplicon.length, "bp.fasta")
+UMImap$FASTA_File <- paste0(UMImap$Sample, "_", UMImap$Marker, "_", UMImap$Target.Amplicon.length, "bp.fasta")
 
 # Count sequences in each FASTA
 fasta_files <- list.files(pattern = "*.fasta")
