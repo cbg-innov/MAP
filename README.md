@@ -105,7 +105,7 @@ When it finishes, your results are in `./MAP_results/` (Excel + TSV tables, an i
 Put your reads (`*.fastq.gz`) and a filled‑in parameters spreadsheet in a folder, mount it, and point MAP at them. Use `--wd` so all outputs land in your mounted folder:
 
 ```bash
-# host folder containing: reads.fastq.gz  and  parameters.xlsx
+# host folder containing: reads.fastq.gz,  parameters.xlsx, and compose.yaml
 MAP_DATA="$(pwd)" docker compose -f ~/Desktop/CBG/MAP/Docker/compose.yaml \
   run --rm map \
   bash /MAP/SCRIPTS/MAP.sh 

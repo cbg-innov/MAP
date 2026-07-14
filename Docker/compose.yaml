@@ -9,9 +9,6 @@ services:
     volumes:
       - reflib:/MAP/REFS
       - ${MAP_DATA:-./data}:/data
-    command:
-      - bash
-      - -lc
-      - "bash /MAP/SCRIPTS/MAP.sh --wd /data"
+    command: ["sleep", "infinity"]
 volumes:
   reflib:
