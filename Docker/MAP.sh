@@ -137,7 +137,7 @@ while [[ $# -gt 0 ]]; do
         cores_to_leave="$2"
         shift 2
         ;;
-    --ref_seq_core)
+    --ref_seq_corr)
         ref_seq_corr="$2" 
         shift 2 
         ;;
@@ -225,7 +225,15 @@ while [[ $# -gt 0 ]]; do
         BIN_percent_ID="$2"
         shift 2
         ;;
-    *) 
+    --BIN_maxaccepts)
+        BIN_maxaccepts="$2"
+        shift 2
+        ;;
+    --BIN_maxhits)
+        BIN_maxhits="$2"
+        shift 2
+        ;;
+    *)
         echo "Unknown option: $1" 
         exit 1 
         ;; 

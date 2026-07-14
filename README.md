@@ -1,6 +1,6 @@
 # MAP — Metabarcoding Analysis Pipeline
 
-MAP is a fully containerized metabarcoding pipeline that supports both **Illumina paired‑end** and **Oxford Nanopore (ONT) / long‑read single‑end** data. All tools (incl. R and Python packages, etc. ) and reference databases are baked into the container or automatically created upon running MAP. MAP is cuxtomizable using command line flags and a customizable parameters file designed for customizing parameters for different barcode markers, UMIs, and primers, if desired. 
+MAP is a fully containerized metabarcoding pipeline that supports both **Illumina paired‑end** and **Oxford Nanopore (ONT) / long‑read single‑end** data. All tools (incl. R and Python packages, etc. ) and reference databases are baked into the container or automatically created upon running MAP. MAP is customizable using command line flags and a customizable parameters file designed for customizing parameters for different barcode markers, UMIs, and primers, if desired. 
 
 ---
 
@@ -12,12 +12,10 @@ MAP is a fully containerized metabarcoding pipeline that supports both **Illumin
 - [Run on your own data](#run-on-your-own-data)
 - [Interactive container](#interactive-container)
 - [Parameters](#parameters)
-- [Configuration](#configuration)
 - [Outputs](#outputs)
 - [Build the image yourself](#build-the-image-yourself)
 - [Reference library](#reference-library)
 - [Demo data](#demo-data)
-- [Advanced parameters](#advanced-parameters)
 - [Troubleshooting](#troubleshooting)
 - [Citation](#citation)
 
@@ -79,7 +77,7 @@ docker pull ghcr.io/cbg-innov/map:latest
 
 Bundled inside the image (under `/MAP/Metabarcoding/`) and easily viewable from 'workdir' directory in Github repo:
 - `PHAUS_1K_RawReads.fastq.gz` — small COI test read set.
-- `parameters_PHAUS_1K.xlsx` — matching parameters spreadsheet (use as your template).
+- `parameters.xlsx` — matching parameters spreadsheet (use as your template).
 - `compose.yaml` - compose file to aid command line 
 
 Running MAP with no `--fastq`/`--params` runs this demo end‑to‑end.
@@ -106,9 +104,9 @@ Put your reads (`*.fastq.gz`) and a filled‑in parameters spreadsheet in a fold
 
 ```bash
 # host folder containing: reads.fastq.gz,  parameters.xlsx, and compose.yaml
-MAP_DATA="$(pwd)" docker compose -f ~/Desktop/CBG/MAP/Docker/compose.yaml \
+MAP_DATA="$(pwd)" docker compose -f compose.yaml \
   run --rm map \
-  bash /MAP/SCRIPTS/MAP.sh 
+  bash /MAP/SCRIPTS/MAP.sh \
   --fastq /data/*.fastq.gz \
   --params /data/my_parameters.xlsx \
   --wd /data
@@ -153,7 +151,7 @@ To make your own data visible inside the interactive container, add a bind mount
 The 'UMIs and Primers', 'Bulk Sample Metadata', (except Instructions) must be filled out.
 
 ### The parameters spreadsheet
-Important parameters are set in the `.xlsx` parameters file. Start from the bundled `parameters_PHAUS_1K.xlsx` in the workdir directory on Github to understand formatting. Key fields:
+Important parameters are set in the `.xlsx` parameters file. Start from the bundled `parameters.xlsx` in the workdir directory on Github to understand formatting. Key fields:
 
 | Tab | Field | Meaning |
 |---|---|---|
@@ -176,8 +174,8 @@ Important parameters are set in the `.xlsx` parameters file. Start from the bund
 | | **Forward / Reverse Primer Name** | This is where you indicate the name you will use for the corresponding Forward / Reverse Primer Sequences that are used in the 'UMIs and Primers' tab (e.g., PHAUS_F2, PHAUS_R3) |
 | | **Forward / Reverse Primer Sequence** | This is where you indicate the sequence that corresponds with the primer name you provided  (e.g., AYATRGCHTTYCCHCG) |
 | | **Marker** | Locus name (e.g. `COI-5P`) |
-| | **Reference Library** | SINTAX‑formatted reference DB name (e.g., BOLDistilled_COI_Apr2026). Note: BOLDistilled_COI_ can be used and will trigger the latest reference library the first time MAP is used. |
-| | **Min / Max Amplicon Length** | Length filter on merged paired end reads WITHOUT UMIs or primers or single reads (e.g., ONT) WITH UMIs and primers attached. We use a tight filter close to desired amplicon size (e.g., 387,430) for paired end data, and a very loose filter (e.g., 100-1000) for paired end data simply to remove erratic sequencing errors. |
+| | **Reference Library** | SINTAX‑formatted reference DB name (e.g., BOLDistilled_COI_Apr2026). Note: BOLDistilled_COI_ can be used to allow for updated/different libraries to be used without errors. |
+| | **Min / Max Amplicon Length** | Length filter  WITHOUT UMIs or primers or single reads (e.g., ONT) WITH UMIs and primers attached. |
 | | **Target amplicon length** | Expected amplicon length (no primers/UMIs) |
 | | **Paired‑end Reads** | `Yes` (Illumina paired-end) or `No` (ONT/long‑read) |
 | | **Min reads per OTU** | OTUs below this read count are discarded (e.g., 2) |
@@ -191,22 +189,38 @@ Override paths and advanced parameters at run time (defaults shown):
 
 | Flag | Default | Description |
 |---|---|---|
-| `--fastq` | `/MAP/Metabarcoding/PHAUS_1K_RawReads.fastq.gz` | Input reads |
-| `--params` | `/MAP/Metabarcoding/parameters_PHAUS_1K.xlsx` | Parameters spreadsheet |
-| `--wd` | `/MAP/Metabarcoding` | Working directory (outputs go to `<wd>/output`) |
+| `--fastq` | `/MAP/Metabarcoding/PHAUS_1K_RawReads.fastq.gz` | Input reads. You may use a wildcard to refer to multiple files, but assign a similar prefix (e.g., `PHAUS_Illumina_*.fastq.gz`). |
+| `--params` | `/MAP/Metabarcoding/parameters.xlsx` | Parameters spreadsheet |
 | `--refs` | `/MAP/REFS` | Reference library directory |
+| `--wd` | `/MAP/Metabarcoding` | Working directory (outputs go to `<wd>/output`) |
 | `--scripts` | `/MAP/SCRIPTS` | Pipeline scripts directory |
 | `--sintax_cutoff` | `0.6` | SINTAX confidence cutoff (0–1) |
-| `--componentreads` | `1` | Save per‑OTU component reads (`1` yes / `0` no) |
-| `--min_rep_prop` | `0.65` | Min proportion of replicates an OTU must appear in. |
-| `--high_dens_prop` | `0.65` | Min proportion within the high‑density read zone. For Illumina, we recommend 0.15 |
-| `--alpha_default` | `0.001` | Default contamination rate (no negative controls). Not used if alpha_quantile and negative controls are provided.  |
-| `--alpha_quantile` | `0.9` | Quantile of estimated contamination rate to use. For Illumina, we recommend 0.8 |
-| `--k_multiplier` | `1` | Contaminant‑floor multiplier (`<1` permissive, `>1` strict). Note: we do not recommend changing this unless widespread contamination occured. k_multiplier values over 1 are likely to remove a lot of good data. |
-| `--Ill_abskew` | `10` | UCHIME abskew params (Illumina) |
-| `--Ill_mindiv` | `0.0005` | UCHIME mindiv params (Illumina) |
-| `--LR_abskew` | `10` | UCHIME abskew params (long‑read) |
-| `--LR_mindiv` | `0.0005` | UCHIME mindiv params (long‑read) |
+| `--componentreads` | `0` | Save per‑OTU component reads (`1` yes / `0` no) |
+| `--cores_to_leave` | `2` | How many cores to leave free. MAP will use the rest. |
+| `--ref_seq_corr` | `/MAP/REFS/reference_seqs_327K.fasta` | File used for sequence correction |
+| `--umi_overlap_min` | `0.75` | Multiplier applied to UMI lengths during demultiplexing. We recommend 0.75 for UMIs ≥12 nucleotides, and 1.0 for UMIs <12 nucleotides. |
+| `--primer_overlap_min` | `0.75` | Multiplier applied to primer lengths. We recommend 0.75. |
+| `--error_umi1` | `0.125` | Max error rate (Cutadapt) for the forward UMI; could be lower for shorter UMI sequences (e.g., <10bp) |
+| `--error_umi2` | `0.125` | Max error rate (Cutadapt) for the reverse UMI; could be lower for shorter UMI sequences (e.g., <10bp) |
+| `--error_primer1` | `0.2` | Max error rate (Cutadapt) for the forward primer |
+| `--error_primer2` | `0.2` | Max error rate (Cutadapt) for the reverse primer |
+| `--maxee` | `1` | (Illumina paired‑end only) Max expected error value permitted |
+| `--minqual` | `10` | Min quality score permitted with Chopper (ONT/long‑read). We recommend 10 for long‑read sequences with lower overall predicted quality for better retention; a score closer to 20 is likely more useful for higher‑quality sequences (e.g., HiFi PacBio). |
+| `--min_read_and_primer_length` | `100` | Min length of sequence+primers kept by Chopper. Kept loose to account for variable markers with variable polymorphic lengths. |
+| `--max_read_and_primer_length` | `1000` | Max length of sequence+primers kept by Chopper. Kept loose to account for variable markers with variable polymorphic lengths. |
+| `--Ill_abskew` | `10` | (Paired‑end/Illumina only) VSEARCH `uchime_denovo` abskew parameter |
+| `--Ill_mindiv` | `0.0005` | (Paired‑end/Illumina only) VSEARCH `uchime_denovo` mindiv parameter |
+| `--LR_abskew` | `10` | (Long‑read/ONT only) VSEARCH `uchime_denovo` abskew parameter |
+| `--LR_mindiv` | `0.0005` | (Long‑read/ONT only) VSEARCH `uchime_denovo` mindiv parameter |
+| `--minsize_unoise` | `2` | Min cluster size (within samples) for paired‑end reads using VSEARCH `cluster_unoise` |
+| `--min_rep_prop` | `0.65` | Min proportion of replicate samples an OTU must be present in to be retained |
+| `--high_dens_prop` | `0.65` | Min proportion of replicates (where the OTU is present) whose sequence count falls within the high kernel‑density area, for the OTU to be retained. For Illumina, we recommend 0.15 |
+| `--alpha_default` | `0.001` | Default contamination rate; only used if `alpha_quantile` is not defined. |
+| `--alpha_quantile` | `0.9` | Quantile of the calculated alpha (contaminated‑reads floor estimate) to use. For Illumina, we recommend 0.8 |
+| `--k_multiplier` | `1` | Contaminant‑floor multiplier (`<1` permissive, `>1` strict). Note: we do not recommend changing this unless widespread contamination occurred. Values over 1 are likely to remove a lot of good data. |
+| `--BIN_percent_ID` | `0.85` | We recommend 0.85 for short‑read data. Threshold to keep matches to BINs in the final database, regardless of 'formal' BIN assignment. Matches below this threshold are labeled "NO MATCH" in the final data. |
+| `--BIN_maxaccepts` | `3` | Parameter fed to VSEARCH's `usearch_global` command. |
+| `--BIN_maxhits` | `3` | Parameter fed to VSEARCH's `usearch_global` command. |
 
 > **Tip (ONT):** raising **Min reads per OTU** is an effective lever for trimming low‑read long‑read error variants and tightening per‑sample richness.
 
@@ -238,11 +252,11 @@ cd Docker
 docker build -t map .
 ```
 
-This installs the full environment via `micromamba`, lays out `SCRIPTS/`, `Metabarcoding/`, and `REFS/`, installs Quarto and `iNEXT`, and downloads + unpacks the reference libraries.
+This installs the full environment via `micromamba`, lays out `SCRIPTS/`, `Metabarcoding/`, and `REFS/`, installs Quarto and `iNEXT`, and downloads + unpacks teh reference library used for sequence correction of COI.
 
 Run a locally‑built image by replacing `ghcr.io/cbg-innov/map:latest` with `map:latest` in any command above.
 
-**Multi‑arch (published to ghcr.io):** the published `ghcr.io/cbg-innov/map:latest` image is a single multi‑arch manifest (linux/amd64 + linux/arm64), built by the `.github/workflows/docker-publish.yml` GitHub Actions workflow. amd64 builds natively on the GitHub runner and arm64 is built via QEMU emulation under `docker buildx`, so Docker automatically pulls the right layer whether you're on Apple Silicon or an x86 Linux/CI box — no cross‑building on your own machine required. The workflow runs on pushes to `main` that touch `Docker/**`, on version tags (`v*`), or manually via `workflow_dispatch`.
+**Multi‑arch (published to ghcr.io):** the published `ghcr.io/cbg-innov/map:latest` image is a single multi‑arch manifest (linux/amd64 + linux/arm64), built by the `.github/workflows/docker-publish.yml` GitHub Actions workflow. amd64 builds natively on the GitHub runner and arm64 is built via QEMU emulation under `docker buildx`, so Docker automatically pulls the right layer whether you're on Apple Silicon or an x86 Linux/CI box.
 
 ---
 
@@ -250,12 +264,13 @@ Run a locally‑built image by replacing `ghcr.io/cbg-innov/map:latest` with `ma
 
 The latest **BOLDdistilled** COI SINTAX reference set is downloaded and unpacked into `/MAP/REFS` **at first run time** and needs an internet connection, and may prolong the MAP demo runtime slightly. The COI correction reference set is provided **at first build time** — no manual download needed. With `docker compose`, `REFS` is mounted as a named volume (`reflib`) so it persists across container recreations and can be shared between containers. If you wish to change the reference library, make sure that the parameters.xlsx sheet reflects the new name and copy your vsearch reference file into your working directory. Make sure to also change the --refs flag while running via command line to include the file name, minus '.fasta', e.g.:
 ```bash
-MAP_DATA="$(pwd)" docker compose -f ~/Desktop/CBG/MAP/Docker/compose.yaml \
+MAP_DATA="$(pwd)" docker compose -f compose.yaml \
   run --rm map \
-  bash /MAP/SCRIPTS/MAP.sh 
+  bash /MAP/SCRIPTS/MAP.sh \
   --fastq /data/*.fastq.gz \
   --params /data/my_parameters.xlsx \
-  --refs /data/my_refs \  # Calls the reference file name 'my_refs' that is in the same working directory as the parameters and fastq files.
+  # Calls the reference file name 'my_refs' that is in the same working directory as the parameters and fastq files.
+  --refs /data/my_refs \
   --wd /data
 ```
 
