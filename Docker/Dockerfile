@@ -27,6 +27,7 @@ RUN micromamba create -y -n map -c conda-forge -c bioconda -c anaconda \
     bc=1.07.1 \
     zip=3.0 \
     chopper=0.13.0 \
+    compilers=1.11.0 \
 # and python libs.
     pandas=3.0.0 \
     openpyxl=3.1.5 \
@@ -88,7 +89,8 @@ RUN mv *.xlsx Metabarcoding
 SHELL ["micromamba", "run", "-n", "map", "/bin/bash", "-c"]
 
 # iNEXT installation doesn't work well with mamba. Install it from CRAN.
-RUN R -e "install.packages('iNEXT', repos='https://cloud.r-project.org', type='source')"
+RUN R -e "install.packages('iNEXT', repos='https://cloud.r-project.org', type='source')" \
+    && R -e "if (!requireNamespace('iNEXT', quietly = TRUE)) quit(status = 1)"
 
 # Unzip the COI sequence-correction reference (small, static, bundled with the repo).
 # MAP.sh downloads the latest copy at runtime into the persistent REFS volume on first use.
