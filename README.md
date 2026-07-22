@@ -1,6 +1,6 @@
 # MAP — Metabarcoding Analysis Pipeline
 
-MAP is a fully containerized metabarcoding pipeline that supports both **Illumina paired‑end** and **Oxford Nanopore (ONT) / long‑read single‑end** data. All tools (incl. R and Python packages, etc. ) and reference databases are baked into the container or automatically created upon running MAP. MAP is customizable using command line flags and a customizable parameters file designed for customizing parameters for different barcode markers, UMIs, and primers, if desired. 
+MAP is a fully containerized metabarcoding pipeline that supports both **Illumina paired‑end** and **Oxford Nanopore (ONT) / long‑read single‑end** data. All tools (incl. R and Python packages, etc. ) and reference databases are baked into the container or automatically created upon running MAP. MAP is customizable using command line flags and a parameters file designed to accomodate different barcode markers, UMIs, and primers, if desired. 
 
 ---
 
