@@ -15,6 +15,7 @@ MAP is a fully containerized metabarcoding pipeline that supports both **Illumin
 - [Outputs](#outputs)
 - [Build the image yourself](#build-the-image-yourself)
 - [Reference library](#reference-library)
+- [Offline use & reusing the reference library](#offline-use--reusing-the-reference-library)
 - [Demo data](#demo-data)
 - [Troubleshooting](#troubleshooting)
 - [Citation](#citation)
@@ -65,7 +66,7 @@ https://www.docker.com/products/docker-desktop/
 ---
 
 ## Quick start (run the included demo after Docker setup)
-- **Runs the demo out of the box.** With no arguments, MAP runs the bundled `PHAUS_1K` test dataset, so you can confirm the whole pipeline works before touching your own data.
+- **Runs the demo out of the box. Highly recommended.** With no arguments, MAP runs the bundled `PHAUS_1K` test dataset, so you can confirm the whole pipeline works before touching your own data.
 
 **Note:** The instructions are meant to be run from the '<PATH>/workdir' directory, but can be run from any directory with the fastq.gz, parameters.xlsx, and compose.yaml files. These 3 files are required for MAP to run. 
 
@@ -126,7 +127,7 @@ For exploring intermediate files or running repeatedly, keep a container alive. 
 
 ```bash
 docker compose up -d            # start a long‑running 'map' container
-docker compose exec -it map bash        # drop into a shell (the 'map' env auto‑activates)
+docker compose exec map bash    # drop into a shell (the 'map' env auto‑activates)
 
 # inside the container:
 bash SCRIPTS/MAP.sh        # runs the demo, or add --fastq/--params/--wd
@@ -256,22 +257,53 @@ This installs the full environment via `micromamba`, lays out `SCRIPTS/`, `Metab
 
 Run a locally‑built image by replacing `ghcr.io/cbg-innov/map:latest` with `map:latest` in any command above.
 
-**Multi‑arch (published to ghcr.io):** the published `ghcr.io/cbg-innov/map:latest` image is a single multi‑arch manifest (linux/amd64 + linux/arm64), built by the `.github/workflows/docker-publish.yml` GitHub Actions workflow. amd64 builds natively on the GitHub runner and arm64 is built via QEMU emulation under `docker buildx`, so Docker automatically pulls the right layer whether you're on Apple Silicon or an x86 Linux/CI box.
+**Multi‑arch (published to ghcr.io):** the published `ghcr.io/cbg-innov/map:latest` image is a single multi‑arch manifest (linux/amd64 + linux/arm64), built by the `.github/workflows/docker-publish.yml` GitHub Actions workflow. amd64 builds natively on the GitHub runner and arm64 is built via QEMU emulation under `docker buildx`, so Docker automatically pulls the right layer whether you're on Apple Silicon or an x86 Linux.
 
 ---
 
 ## Reference library
 
-The latest **BOLDdistilled** COI SINTAX reference set is downloaded and unpacked into `/MAP/REFS` **at first run time** and needs an internet connection, and may prolong the MAP demo runtime slightly. The COI correction reference set is provided **at first build time** — no manual download needed. With `docker compose`, `REFS` is mounted as a named volume (`reflib`) so it persists across container recreations and can be shared between containers. If you wish to change the reference library, make sure that the parameters.xlsx sheet reflects the new name and copy your vsearch reference file into your working directory. Make sure to also change the --refs flag while running via command line to include the file name, minus '.fasta', e.g.:
+The latest **BOLDdistilled** COI SINTAX reference set is downloaded and unpacked into `/MAP/REFS` **at first run time** and needs an internet connection, and may prolong the MAP demo runtime slightly. The COI correction reference set is provided **at first build time** — no manual download needed. `REFS` is mounted as a named volume (`reflib`) so it persists across runs and can be shared between containers (see [Offline use & reusing the reference library](#offline-use--reusing-the-reference-library) for details on how that persistence works). If you wish to change the reference library, make sure that the parameters.xlsx sheet reflects the new name and copy your vsearch reference file into your working directory. Make sure to also change the `--refs` flag while running via command line to include the file name, minus `.fasta`.
+
+`--refs` points at a folder containing your custom reference library (e.g. `my_refs`), placed in the same working directory as your parameters and fastq files:
 ```bash
 MAP_DATA="$(pwd)" docker compose -f compose.yaml \
   run --rm map \
   bash /MAP/SCRIPTS/MAP.sh \
   --fastq /data/*.fastq.gz \
   --params /data/my_parameters.xlsx \
-  # Calls the reference file name 'my_refs' that is in the same working directory as the parameters and fastq files.
   --refs /data/my_refs \
   --wd /data
+```
+
+---
+
+## Offline use & reusing the reference library
+
+**The first run needs internet access** — MAP downloads the BOLDdistilled reference library (~1GB) into `/MAP/REFS` the first time it doesn't find one already there. **Every run after that can be fully offline**, as long as two things are already in place from a prior run:
+- The image itself: `docker pull ghcr.io/cbg-innov/map:latest` has already been run once (`workdir/compose.yaml` won't try to re-pull it otherwise).
+- The `reflib` volume already has the reference library downloaded into it.
+
+**Using the same reference library across multiple datasets/directories:** `workdir/compose.yaml` pins its Compose project name (`name: map`), so the `reflib` volume (with and the reference library inside it) is automatically reused no matter which directory you run from. Set up each dataset the standard way:
+
+```bash
+# first-ever run (needs internet once, to populate the reference library)
+cd ~/map_runs/dataset1              # contains: reads1.fastq.gz, params1.xlsx, compose.yaml
+MAP_DATA="$(pwd)" docker compose -f compose.yaml run --rm map \
+  bash /MAP/SCRIPTS/MAP.sh --fastq /data/reads1.fastq.gz --params /data/params1.xlsx --wd /data
+
+# later run, different directory, different dataset — fully offline, no re-download
+cd ~/map_runs/dataset2              # contains: reads2.fastq.gz, params2.xlsx, compose.yaml
+MAP_DATA="$(pwd)" docker compose -f compose.yaml run --rm map \
+  bash /MAP/SCRIPTS/MAP.sh --fastq /data/reads2.fastq.gz --params /data/params2.xlsx --wd /data
+```
+
+Each dataset folder needs its own copy of `compose.yaml` and the customized fastq/parameters files. Note: compose.yaml file content is identical every time, it just needs to be present so `docker compose` has something to read.
+
+**Verifying you're set up for offline use**, before disconnecting from the internet:
+```bash
+docker images | grep cbg-innov/map        # confirm the image is present locally
+docker volume ls | grep map_reflib        # confirm the reflib volume exists
 ```
 
 ---

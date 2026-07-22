@@ -1,5 +1,11 @@
 #make BOLDdistilled lib persist.
 
+# Pinning the project name means the 'reflib' volume (the downloaded reference
+# library) is reused across every run, regardless of which directory you run
+# this from. Without this, each new dataset folder would get its own empty
+# volume and re-download the ~1GB reference library from scratch.
+name: map
+
 services:
   map:
     image: ghcr.io/cbg-innov/map:latest
