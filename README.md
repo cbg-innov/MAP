@@ -319,6 +319,6 @@ docker volume ls | grep map_reflib        # confirm the reflib volume exists
 
 ## Citation 
 
-> Sean WJ Prosser, Nicholas W Bard, Ken A Thompson, Robin M Floyd, Sameer Padhye, Emine Ozsahin, Saeideh Jafarpour, and Paul DN Hebert. The Metabarcoding Analysis Pipeline (MAP): Simple, accurate, and flexible metabarcoding. <i> In prep. </i>
+> Sean WJ Prosser, Nicholas W Bard, Ken A Thompson, Robin M Floyd, Sameer Padhye, Emine Ozsahin, Saeideh Jafarpour, and Paul DN Hebert (2026). The Metabarcoding Analysis Pipeline (MAP): Simple, accurate, and flexible metabarcoding. <i> BioRxiv </I>. https://doi.org/10.64898/2026.07.22.740107
 
 
