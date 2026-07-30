@@ -10,11 +10,11 @@ MAP is a fully containerized metabarcoding pipeline that supports both **Illumin
 - [Requirements](#requirements)
 - [Quick start (run the included demo after Docker setup)](#quick-start-run-the-included-demo)
 - [Run on your own data](#run-on-your-own-data)
+- [Run with your own reference library](#run-with-your-own-reference-library)
 - [Interactive container](#interactive-container)
 - [Parameters](#parameters)
 - [Outputs](#outputs)
 - [Build the image yourself](#build-the-image-yourself)
-- [Reference library](#reference-library)
 - [Offline use & reusing the reference library](#offline-use--reusing-the-reference-library)
 - [Demo data](#demo-data)
 - [Troubleshooting](#troubleshooting)
@@ -88,10 +88,9 @@ Running MAP with no `--fastq`/`--params` runs this demo end‑to‑end.
 
 ```bash
 cd <PATH>/workdir #or rename
-MAP_DATA="$(pwd)" \
-  docker compose -f compose.yaml run --rm map \
+docker compose -f compose.yaml run --rm map \
   bash /MAP/SCRIPTS/MAP.sh \
-  --wd /data
+  --wd /data/run
 ```
 #### Here, the fastq.gz and parameters files are internal and do not need to be named directly. 
 
@@ -101,19 +100,38 @@ When it finishes, your results are in `./MAP_results/` (Excel + TSV tables, an i
 
 ## Run on your own data
 
-Put your reads (`*.fastq.gz`) and a filled‑in parameters spreadsheet in a folder, mount it, and point MAP at them. Use `--wd` so all outputs land in your mounted folder:
+Put your reads (`*.fastq.gz`) and a filled‑in parameters spreadsheet into the `data` directory, and point MAP at them. Use `--wd` so all outputs land in your mounted folder:
 
 ```bash
 # host folder containing: reads.fastq.gz,  parameters.xlsx, and compose.yaml
-MAP_DATA="$(pwd)" docker compose -f compose.yaml \
-  run --rm map \
+cd <PATH>/workdir
+cp <DATA_FASTQ.GZ> <PATH>/workdir/data/
+cp <PARAMETERS.XLSX> <PATH>/workdir/data/
+docker compose -f compose.yaml run --rm map \
   bash /MAP/SCRIPTS/MAP.sh \
   --fastq /data/*.fastq.gz \
   --params /data/my_parameters.xlsx \
+  --wd /data/run
+```
+
+## Run with your own reference library
+
+The latest **BOLDdistilled** COI SINTAX reference set is downloaded and unpacked into `/MAP/REFS` **at first run time** and needs an internet connection, and may prolong the MAP demo runtime slightly. The COI correction reference set is provided **at first build time** — no manual download needed. `REFS` is mounted as a named volume (`reflib`) so it persists across runs and can be shared between containers (see [Offline use & reusing the reference library](#offline-use--reusing-the-reference-library) for details on how that persistence works). If you wish to change the reference library, make sure that the parameters.xlsx sheet reflects the new name and copy your vsearch reference file into your working directory. Make sure to also change the `--refs` flag while running via command line to include the file name, minus `.fasta`.
+
+`--refs` points at a folder containing your custom reference library (e.g. `refs`), and must be independent of the `run` directory. We recommend `<PATH>/workdir/data/refs/<reference_fasta>`:
+
+```bash
+# host folder containing: reads.fastq.gz,  parameters.xlsx, and compose.yaml
+mkdir <PATH>/workdir/data/refs
+cp <REF_FILES_FASTA> <PATH>/workdir/data/refs/
+cd <PATH>/workdir
+docker compose -f compose.yaml run --rm map \
+  bash /MAP/SCRIPTS/MAP.sh \
+  --refs /data/refs \
   --wd /data
 ```
 
-Results appear in `./my_run/output/`.
+Results appear in `./data/run/output/`.
 
 - **Illumina paired‑end:** Set *Paired‑end Reads = Yes* in the parameters spreadsheet. Use the common prefix and/or suffix for both files, with '*' where names diverge (R1/R2 handling and merging are driven by the parameters file.)
 - **ONT / long‑read:** set *Paired‑end Reads = No* in the parameters spreadsheet.
@@ -261,41 +279,22 @@ Run a locally‑built image by replacing `ghcr.io/cbg-innov/map:latest` with `ma
 
 ---
 
-## Reference library
-
-The latest **BOLDdistilled** COI SINTAX reference set is downloaded and unpacked into `/MAP/REFS` **at first run time** and needs an internet connection, and may prolong the MAP demo runtime slightly. The COI correction reference set is provided **at first build time** — no manual download needed. `REFS` is mounted as a named volume (`reflib`) so it persists across runs and can be shared between containers (see [Offline use & reusing the reference library](#offline-use--reusing-the-reference-library) for details on how that persistence works). If you wish to change the reference library, make sure that the parameters.xlsx sheet reflects the new name and copy your vsearch reference file into your working directory. Make sure to also change the `--refs` flag while running via command line to include the file name, minus `.fasta`.
-
-`--refs` points at a folder containing your custom reference library (e.g. `my_refs`), placed in the same working directory as your parameters and fastq files:
-```bash
-MAP_DATA="$(pwd)" docker compose -f compose.yaml \
-  run --rm map \
-  bash /MAP/SCRIPTS/MAP.sh \
-  --fastq /data/*.fastq.gz \
-  --params /data/my_parameters.xlsx \
-  --refs /data/my_refs \
-  --wd /data
-```
-
----
-
 ## Offline use & reusing the reference library
 
 **The first run needs internet access** — MAP downloads the BOLDdistilled reference library (~1GB) into `/MAP/REFS` the first time it doesn't find one already there. **Every run after that can be fully offline**, as long as two things are already in place from a prior run:
 - The image itself: `docker pull ghcr.io/cbg-innov/map:latest` has already been run once (`workdir/compose.yaml` won't try to re-pull it otherwise).
 - The `reflib` volume already has the reference library downloaded into it.
+Note: the reference library will not update unless re-downloaded.
 
 **Using the same reference library across multiple datasets/directories:** `workdir/compose.yaml` pins its Compose project name (`name: map`), so the `reflib` volume (with and the reference library inside it) is automatically reused no matter which directory you run from. Set up each dataset the standard way:
 
 ```bash
-# first-ever run (needs internet once, to populate the reference library)
-cd ~/map_runs/dataset1              # contains: reads1.fastq.gz, params1.xlsx, compose.yaml
-MAP_DATA="$(pwd)" docker compose -f compose.yaml run --rm map \
-  bash /MAP/SCRIPTS/MAP.sh --fastq /data/reads1.fastq.gz --params /data/params1.xlsx --wd /data
+# first, run commands specified in 'Demo data' section.
 
 # later run, different directory, different dataset — fully offline, no re-download
 cd ~/map_runs/dataset2              # contains: reads2.fastq.gz, params2.xlsx, compose.yaml
-MAP_DATA="$(pwd)" docker compose -f compose.yaml run --rm map \
-  bash /MAP/SCRIPTS/MAP.sh --fastq /data/reads2.fastq.gz --params /data/params2.xlsx --wd /data
+docker compose -f compose.yaml run --rm map \
+  bash /MAP/SCRIPTS/MAP.sh --fastq /data/<NEW>.fastq.gz --params /data/<DIFFERENT_params>.xlsx --wd /data/run
 ```
 
 Each dataset folder needs its own copy of `compose.yaml` and the customized fastq/parameters files. Note: compose.yaml file content is identical every time, it just needs to be present so `docker compose` has something to read.
