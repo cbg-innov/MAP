@@ -68,7 +68,7 @@ https://www.docker.com/products/docker-desktop/
 ## Quick start (run the included demo after Docker setup)
 - **Runs the demo out of the box. Highly recommended.** With no arguments, MAP runs the bundled `PHAUS_1K` test dataset, so you can confirm the whole pipeline works before touching your own data.
 
-**Note:** The instructions are meant to be run from the '<PATH>/workdir' directory, but can be run from any directory with the fastq.gz, parameters.xlsx, and compose.yaml files. These 3 files are required for MAP to run. 
+**Note:** The instructions are meant to be run from the '<PATH>/workdir' directory, but can be run from any directory with the fastq.gz, parameters.xlsx, and compose.yaml files. These 3 files are required for MAP to run and they should be set up with the same structure as in the provided `workdir` directory.
 
 **Pull the image:**
 ```bash
@@ -80,6 +80,16 @@ Bundled inside the image (under `/MAP/Metabarcoding/`) and easily viewable from 
 - `PHAUS_1K_RawReads.fastq.gz` — small COI test read set.
 - `parameters.xlsx` — matching parameters spreadsheet (use as your template).
 - `compose.yaml` - compose file to aid command line 
+
+#### All working directory files can be downloaded using git:
+
+```bash
+git clone --no-checkout --depth 1 --filter=blob:none https://github.com/cbg-innov/MAP.git
+cd MAP
+git sparse-checkout set workdir
+git checkout main
+```
+These provide a template for running MAP on your own data. The compose.yaml file may be copied and re-used. 
 
 Running MAP with no `--fastq`/`--params` runs this demo end‑to‑end.
 
