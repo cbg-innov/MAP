@@ -257,17 +257,25 @@ echo "Using scripts directory: $scripts_dir"
 echo "Sintax cutoff: $sintax_cutoff"
 echo "Using component reads (1 for yes, 0 for no): $componentreads"
 
-#### Fetch the BOLDdistilled sintax reference library on first use.
-
-if ! ls "$reference_lib_dir"/BOLDistilled*.fasta >/dev/null 2>&1; then
-    echo -e "\n****** BOLDdistilled sintax reference library not found in $reference_lib_dir — downloading latest..."
+#### Report which reference library MAP will use, and fetch the BOLDdistilled
+#### sintax library on first use if none is present.
+reflib_present=( "$reference_lib_dir"/BOLDistilled*.fasta )
+if [ -e "${reflib_present[0]}" ]; then
+    for f in "${reflib_present[@]}"; do
+        echo "Using reference library: $(basename "$f")"
+    done
+else
+    echo "No reference library provided. MAP will download latest BOLDistilled release."
     mkdir -p "$reference_lib_dir"
     reflib_tmp="$(mktemp -d)"
     curl -fSL https://us-sea-1.linodeobjects.com/boldistilled/sintax.zip -o "$reflib_tmp/sintax.zip"
     python -m zipfile -e "$reflib_tmp/sintax.zip" "$reflib_tmp"
     mv "$reflib_tmp"/sintax/* "$reference_lib_dir"/
     rm -rf "$reflib_tmp"
-    echo "****** Reference library download complete."
+    reflib_present=( "$reference_lib_dir"/BOLDistilled*.fasta )
+    for f in "${reflib_present[@]}"; do
+        echo "****** Download complete. Using reference library: $(basename "$f")"
+    done
 fi
 
 #######################################################################
@@ -770,17 +778,27 @@ else
     echo "$symm"
 fi
 
-#### Extract forward and reverse primers from mapping file
+#### Extract forward and reverse primers from mapping file. Function to handle all permutations of primers.
 
 awk -F'\t' -v err1="$error_primer1" -v err2="$error_primer2" -v prim_ov=$primer_overlap_min '
+function trim(s) { gsub(/^[ \t\r]+/, "", s); gsub(/[ \t\r]+$/, "", s); return s }
 NR>1 && $4!="" && $4!="NA" && $5!="" && $5!="NA" {
-    key = $4 FS $5
-    if (!(key in seen)) {
-        seen[key]=1
-        f[++n]=$4
-        r[n]=$5
-        fnum[n]= int(length($4) * prim_ov)
-        rnum[n]= int(length($5) * prim_ov)
+    nf = split($4, F, ",")
+    nr = split($5, R, ",")
+    for (a = 1; a <= nf; a++) {
+        fs = trim(F[a]); if (fs == "" || fs == "NA") continue
+        for (b = 1; b <= nr; b++) {
+            rs = trim(R[b]); if (rs == "" || rs == "NA") continue
+            key = fs SUBSEP rs
+            if (!(key in seen)) {
+                seen[key] = 1
+                n++
+                f[n] = fs
+                r[n] = rs
+                fnum[n] = int(length(fs) * prim_ov)
+                rnum[n] = int(length(rs) * prim_ov)
+            }
+        }
     }
 }
 END {

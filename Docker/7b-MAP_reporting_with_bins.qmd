@@ -1,5 +1,5 @@
 ---
-title: "MAPLE Report"
+title: "MAP Report"
 title-block-banner: true
 title-block-banner-color: '#CC4945'
 subtitle: "`r format(Sys.Date(),format=c('%d-%b-%Y'))`"
