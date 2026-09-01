@@ -6,3 +6,10 @@
 
 # MAP runtime state
 **/.map_status/
+
+# Python
+__pycache__/
+*.pyc
+
+# Snakemake working metadata
+.snakemake/
