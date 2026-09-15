@@ -502,7 +502,8 @@ task1() (
 cores=$(($(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu) - $cores_to_leave))
 
 #### Collect and reformat parameters information
-cd $working_dir
+mkdir -p "$working_dir" || { echo "ERROR: cannot create working directory '$working_dir'." >&2; exit 1; }
+cd "$working_dir" || { echo "ERROR: cannot enter working directory '$working_dir'." >&2; exit 1; }
 
 python3.12 <<XL1
 import pandas as pd
@@ -689,13 +690,26 @@ min_umi_len_rev=$(awk 'NR>1 {print length($0)}' rev_umis_rc.fasta | sort -n | he
 ############ STEP 3a: Merge PE reads (Illumina only) ##################
 #######################################################################
 
+fastq_prefix() {
+    case "$1" in
+        *.gz) gzip -dc "$1" 2>/dev/null | head -c 5 ;;
+        *)    head -c 5 "$1" 2>/dev/null ;;
+    esac
+}
 #### Check if any file matching the pattern shares the same prefix as all.fastq.gz (to save time for repeat analysis)
+fastq_prefix() {
+    case "$1" in
+        *.gz) gzip -dc "$1" 2>/dev/null | head -c 5 ;;
+        *)    head -c 5 "$1" 2>/dev/null ;;
+    esac
+}
+
 match=0
 if [ -f all.fastq.gz ]; then
     prefix_all=$(gzip -dc all.fastq.gz 2>/dev/null | head -c 5)
     for f in $fastq_file; do
         [ -f "$f" ] || continue
-        prefix_f=$(gzip -dc "$f" 2>/dev/null | head -c 5)
+        prefix_f=$(fastq_prefix "$f")
         if [ "$prefix_all" = "$prefix_f" ]; then
             match=1
             break
@@ -713,15 +727,28 @@ if [ "$pe_reads" = "Yes" ]; then #if already a copy of all.fastq.gz present, ski
         echo "WARNING: all.fastq.gz exists but does not match input files. Renaming to OLD_all.fastq.gz and re-merging."
         mv all.fastq.gz OLD_all.fastq.gz
         #### Get read1 and read2 from fastq files. must follow either _R1* / _R2* OR _1.fastq.gz /_2.fastq.gz convention.
-        read1=( $(ls *.gz | grep -E '_R1[_.]|_1\.fastq') )
-        read2=( $(ls *.gz | grep -E '_R2[_.]|_2\.fastq') )
+        read1=( $(ls $fastq_file 2>/dev/null | grep -E '_R1[_.]|_1\.fastq') )
+        read2=( $(ls $fastq_file 2>/dev/null | grep -E '_R2[_.]|_2\.fastq') )
+
+        if [ ${#read1[@]} -eq 0 ] || [ ${#read2[@]} -eq 0 ]; then
+            echo "ERROR: could not find paired R1/R2 files matching --fastq '$fastq_file'." >&2
+            echo "       Files must follow the _R1_/_R2_ or _1.fastq/_2.fastq naming convention." >&2
+            exit 1
+        fi
 
         #### Merge paired end reads
         echo -e "******** Merging paired-end reads..."
-        pear -j $cores -f $read1 -r $read2 -o $runid > log.txt
+        echo "   R1: ${read1[0]}"
+        echo "   R2: ${read2[0]}"
+        pear -j $cores -f "${read1[0]}" -r "${read2[0]}" -o $runid > log.txt
+
+        if [ ! -s "$runid.assembled.fastq" ]; then
+            echo "ERROR: PEAR produced no assembled reads. See log.txt." >&2
+            exit 1
+        fi
 
         #### Delete discarded and unassembled paired-end reads
-        rm $runid".discarded.fastq" $runid".unassembled.forward.fastq" $runid".unassembled.reverse.fastq"
+        rm -f $runid".discarded.fastq" $runid".unassembled.forward.fastq" $runid".unassembled.reverse.fastq"
         mv $runid.assembled.fastq all.fastq
     fi
 fi
@@ -1083,8 +1110,14 @@ mkdir ./output
 
 for marker_dir in */; do
      #### Skip unwanted directory
-    [[ "$marker_dir" == "Individual_Raw_Fasta_Files/" ]] || \
+    [[ "$marker_dir" == "Individual_Raw_Fasta_Files/" ]] && continue
     [[ "$marker_dir" == "output/" ]] && continue
+
+    #### Skip any folder that doesn't have <marker>_<lenght>bp naming convention.
+    [[ "${marker_dir%/}" =~ ^.+_[0-9]+bp$ ]] || {
+        echo "Skipping non-marker folder: ${marker_dir%/}"
+        continue
+    }
 
     echo "=== Processing marker folder: ${marker_dir%/} ==="
     
