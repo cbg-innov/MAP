@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+umask 000
 clear
 START_TIME=$(date +%s)
 start_human=$(date "+%Y-%m-%d %H:%M:%S")
@@ -51,6 +52,7 @@ scripts_dir="${scripts_dir:-/MAP/SCRIPTS}"
 sintax_cutoff=0.6 #0-1
 componentreads=0 #Off by default. Use --componentreads to generate files.
 cores_to_leave=2 #How many cores to leave free. MAP will use the rest.
+mem_to_leave=2 #How much RAM (in GB) to leave free.
 ref_seq_corr="${ref_seq_corr:-/MAP/REFS/reference_seqs_327K.fasta}" # File used for sequence correction
 
 #~#~#~#~#~#~#~#~#~#~#
@@ -103,6 +105,9 @@ BIN_percent_ID=0.85 # We recommend 0.85 for short-read data. This is the thresho
 BIN_maxaccepts=3 #parameter to feed VSEARCH's usearch_global command.
 BIN_maxhits=3 #parameter to feed VSEARCH's usearch_global command.
 
+mem_per_job=auto #memory useage per parallel job. 'auto' estimates RAM needs from the largest individual file (i.e., a sample). Enter a number (in GB) to override 'auto' estimate.
+mem_per_job_mult=6 # Safety multiplier applied to the largest sample file when estimating.
+
 
 while [[ $# -gt 0 ]]; do
  case "$1" in 
@@ -136,6 +141,14 @@ while [[ $# -gt 0 ]]; do
         ;;
     --cores_to_leave)
         cores_to_leave="$2"
+        shift 2
+        ;;
+    --mem_to_leave)
+        mem_to_leave="$2"
+        shift 2
+        ;;
+    --mem_per_job)
+        mem_per_job="$2"
         shift 2
         ;;
     --ref_seq_corr)
@@ -512,6 +525,40 @@ task1() (
 
 #### Detect number of cores
 cores=$(($(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu) - $cores_to_leave))
+
+#### Detect usable memory - This will automatically use Docker settings.
+if [ -r /proc/meminfo ]; then
+    mem_total_kb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+    if [ -r /sys/fs/cgroup/memory.max ]; then
+        cg_max=$(cat /sys/fs/cgroup/memory.max)
+        [ "$cg_max" != max ] && mem_total_kb=$(( cg_max / 1024 ))
+    fi
+else
+    mem_total_kb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 ))
+fi
+mem_total=$(( mem_total_kb / 1024 / 1024 ))
+
+if [ "$mem_total" -lt 1 ]; then
+    echo "NOTE: could not compute memory of machine."
+    echo "      MAP parallelization will be controlled by core count alone"
+    mem_budget=0
+else
+    #### Never reserve more than a quarter of what the container actually has.
+    mem_leave_cap=$(( mem_total / 4 ))
+    [ "$mem_leave_cap" -lt 1 ] && mem_leave_cap=1
+    if [ "$mem_to_leave" -gt "$mem_leave_cap" ]; then
+        echo "NOTE: --mem_to_leave (${mem_to_leave}GB) exceeds a quarter of the ${mem_total}GB available; using ${mem_leave_cap}GB."
+        mem_to_leave=$mem_leave_cap
+    fi
+
+    mem_budget=$(( mem_total - mem_to_leave ))
+    if [ "$mem_budget" -lt 1 ]; then
+        echo "WARNING: --mem_to_leave (${mem_to_leave}GB) is larger than the ${mem_total}GB this machine offers."
+        echo "         Falling back to 1GB. Lower --mem_to_leave to use more of it."
+        mem_budget=1
+    fi
+fi
+
 
 #### Collect and reformat parameters information
 mkdir -p "$working_dir" || { echo "ERROR: cannot create working directory '$working_dir'." >&2; exit 1; }
@@ -1183,6 +1230,49 @@ for marker_dir in */; do
     fasta_files=( *.fasta )
     last_fasta="${fasta_files[-1]}"
 
+    #### Parallel memory optimization: ####
+    #### Autocalculate # of samples that can run at once without running out of RAM. Use defaults if memory is not able to be detected.
+    ####
+
+    jobs=$cores
+    job_mem=0
+    mem_gate=0
+
+    if [ "$mem_budget" -ge 1 ]; then
+        if [ "$mem_per_job" = auto ]; then
+            biggest_mb=$(du -m *.fasta 2>/dev/null | sort -rn | head -1 | cut -f1)
+            [ -z "$biggest_mb" ] && biggest_mb=1
+            job_mem=$(( (biggest_mb * mem_per_job_mult + 1023) / 1024 ))
+        else
+            job_mem=$mem_per_job
+        fi
+        [ "$job_mem" -lt 1 ] && job_mem=1
+
+        if [ "$job_mem" -gt "$mem_budget" ]; then
+            echo "WARNING: one sample may need ${job_mem}GB of RAM, but only ${mem_budget}GB is usable."
+            echo "         MAP will run one sample at a time. Close other programs, or lower --mem_to_leave."
+            job_mem=$mem_budget
+        fi
+
+        jobs=$(( mem_budget / job_mem ))
+        [ "$jobs" -lt 1 ] && jobs=1
+        [ "$jobs" -gt "$cores" ] && jobs=$cores
+
+        # Parallel won't start job while available memory sits below safety net value.
+        mem_gate=$(( mem_budget / 4 ))
+        [ "$mem_gate" -lt 1 ] && mem_gate=1
+        [ "$mem_gate" -gt "$job_mem" ] && mem_gate=$job_mem
+    fi
+
+    if [ "$job_mem" -gt 0 ]; then
+        echo -e "******** Clustering $jobs sample(s) at a time (~${job_mem}GB each, ${mem_budget}GB usable)"
+    else
+        echo -e "******** Clustering $jobs sample(s) at a time"
+    fi
+
+    #### Parallel memory optimization END
+    ####
+
     #### Run task1 in parallel
     parallel -j "$cores" task1 {} ::: *.fasta
 
@@ -1459,9 +1549,9 @@ EOF
     fi
 
     #### Tidy up directory and move back to main working directory
-    mkdir -m 777 "1-Results and Report"
-    mkdir -m 777 "2-TSV Versions of Results"
-    mkdir -m 777 "3-Negative Control OTUs"
+    mkdir "1-Results and Report"
+    mkdir "2-TSV Versions of Results"
+    mkdir "3-Negative Control OTUs"
     mv *.xlsx *.html "1-Results and Report"
     mv Metabarcoding_Results*.tsv "2-TSV Versions of Results"
     mv *NegativeControlOTUs.tsv "3-Negative Control OTUs"
@@ -1490,6 +1580,7 @@ echo "Pipeline Complete"
 echo "==============================="
 echo "Machine   : $(hostname)"
 echo "CPU Cores : $cores"
+echo "Memory    : ${mem_budget}GB usable of ${mem_total}GB (${mem_to_leave}GB left free)"
 echo "Run name:   ${runid}"
 echo "Started:    ${start_human}"
 echo "Finished:   ${end_human}"
