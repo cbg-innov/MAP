@@ -49,7 +49,7 @@ reference_lib_dir="${reference_lib_dir:-/MAP/REFS}"
 working_dir="${working_dir:-/MAP/Metabarcoding}" 
 scripts_dir="${scripts_dir:-/MAP/SCRIPTS}"     
 sintax_cutoff=0.6 #0-1
-componentreads=0 #1 for yes, 0 for no
+componentreads=0 #Off by default. Use --componentreads to generate files.
 cores_to_leave=2 #How many cores to leave free. MAP will use the rest.
 ref_seq_corr="${ref_seq_corr:-/MAP/REFS/reference_seqs_327K.fasta}" # File used for sequence correction
 
@@ -80,8 +80,9 @@ min_read_and_primer_length=100
 max_read_and_primer_length=1000
 
 # Chimera removal (Illumina)
-Ill_abskew=10 # Only for paired-end (e.g., Illumina) data. Parameter to be used for the VSEARCH's uchime_denovo command (abskew)
-Ill_mindiv=0.0005 #Only for paired-end (e.g., Illumina) data. Parameter to be used for the VSEARCH's uchime_denovo command (mindiv)
+Ill_chimera_check=1 #On by default. --no_Ill_chimera_check to skip UCHIME chimera screen.
+Ill_abskew=2 # Only for paired-end (e.g., Illumina) data. Parameter to be used for the VSEARCH's uchime_denovo command (abskew)
+Ill_mindiv=0.8 #Only for paired-end (e.g., Illumina) data. Parameter to be used for the VSEARCH's uchime_denovo command (mindiv)
 
 # Chimera removal (long read data)
 LR_abskew=10 # Only for long read (e.g., Oxford Nanopore) data. Parameter to be used for the VSEARCH's uchime_denovo command (abskew)
@@ -130,8 +131,8 @@ while [[ $# -gt 0 ]]; do
         shift 2
         ;;   
     --componentreads)
-        componentreads="$2"
-        shift 2
+        componentreads=1
+        shift
         ;;
     --cores_to_leave)
         cores_to_leave="$2"
@@ -181,6 +182,10 @@ while [[ $# -gt 0 ]]; do
         max_read_and_primer_length="$2"
         shift 2
         ;;     
+    --no_Ill_chimera_check)
+        Ill_chimera_check=0
+        shift
+        ;;
     --Ill_abskew)
         Ill_abskew="$2"
         shift 2
@@ -255,7 +260,8 @@ echo "Using reference directory: $reference_lib_dir"
 echo "Using working directory: $working_dir"
 echo "Using scripts directory: $scripts_dir"
 echo "Sintax cutoff: $sintax_cutoff"
-echo "Using component reads (1 for yes, 0 for no): $componentreads"
+echo "Saving OTU component reads: $([ "$componentreads" -eq 1 ] && echo on || echo off)"
+echo "Illumina chimera screen: $([ "$Ill_chimera_check" -eq 1 ] && echo on || echo off)"
 
 #### Report which reference library MAP will use, and fetch the BOLDdistilled
 #### sintax library on first use if none is present.
@@ -347,20 +353,26 @@ task1() (
     local sampleid="$(basename "$fasta" .fasta)"
     
 
-    #### FOR PAIRED END READS only - Chimera screen using UCHIME (only if ampsize is >= 200 bp)
-    if [[ "$ampsize" -ge 200 && "$pe_reads" = "Yes" ]]; then        
-        # Dereplicate for chimera screen
+    #### FOR PAIRED END READS only - Chimera screen using UCHIME
+    if [[ "$pe_reads" = "Yes" ]]; then
+        #### Dereplicate. Required by cluster_unoise (--sizein/--minsize) whether or
+        #### not the chimera screen runs, so this must stay outside the check below.
         vsearch --derep_fulllength "${sampleid}.fasta" \
-        --output "${sampleid}.d.fasta" \
-        --sizeout 
-        wait
-        echo -e "******** Performing chimera screen..."
-        vsearch --uchime_denovo "${sampleid}.d.fasta" \
-        --chimeras "${sampleid}.chimeras.fasta" \
-        --nonchimeras "${sampleid}.nonchimeras.fasta" \
-        --fasta_width 0 \
-        --abskew $Ill_abskew \
-        --mindiv $Ill_mindiv
+            --output "${sampleid}.d.fasta" \
+            --sizeout
+
+        if [ "$Ill_chimera_check" -eq 1 ]; then
+            echo -e "******** Performing chimera screen..."
+            vsearch --uchime_denovo "${sampleid}.d.fasta" \
+                --chimeras "${sampleid}.chimeras.fasta" \
+                --nonchimeras "${sampleid}.nonchimeras.fasta" \
+                --fasta_width 0 \
+                --abskew $Ill_abskew \
+                --mindiv $Ill_mindiv
+        else
+            echo -e "******** Chimera screen disabled (--no_Ill_chimera_check), skipping..."
+            mv "${sampleid}.d.fasta" "${sampleid}".nonchimeras.fasta
+        fi
     else
         mv "${sampleid}.fasta" "${sampleid}".nonchimeras.fasta
     fi
@@ -1166,7 +1178,7 @@ for marker_dir in */; do
 
     #### Export everything task1 needs
     export -f task1 process_fasta process_otu
-    export cores ampsize minreads componentreads otu_dist1 runid marker pe_reads Ill_abskew Ill_mindiv minsize_unoise
+    export cores ampsize minreads componentreads otu_dist1 runid marker pe_reads Ill_chimera_check Ill_abskew Ill_mindiv minsize_unoise
 
     fasta_files=( *.fasta )
     last_fasta="${fasta_files[-1]}"
@@ -1191,7 +1203,7 @@ for marker_dir in */; do
 
     #### Merge all OTUs into a single master file
     seqkit seq *consensus2.fasta > all_otus_raw_consensus.fasta
-    rm *consensus2.fasta *.chimeras.fasta
+    rm -f *consensus2.fasta *.chimeras.fasta
 
     #### Change OTU sequence names from |reads-n to ;size=n for subsequent size sorting
     sed '/^>/ s/|reads-/;size=/g' all_otus_raw_consensus.fasta > all_otus1_corrected_otus.fasta2
