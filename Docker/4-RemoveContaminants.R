@@ -38,7 +38,7 @@ sintax.input <- read.delim(
 names(sintax.input) <- c("Query","Tax","strand","Tax_final")
 
 # import master OTU table
-df_raw <- read.table("all_otus_run_wide_OTU_info.txt", header = TRUE, sep = "\t")
+df_raw <- read.table("all_otus_run_wide_OTU_info.txt", header = TRUE, sep = "\t", quote = "")
 
 # add sintax results to master OTU table
 df <- merge(df_raw, sintax.input[,c(1,4)], by.x = "Run_Wide_OTU_Name", by.y = "Query", all.x = TRUE)

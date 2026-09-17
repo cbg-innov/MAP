@@ -25,7 +25,7 @@ library(readxl)
 library(stringr)
 
 # Import master tables
-df <- read.table("df.txt", sep = "\t", header = T)
+df <- read.table("df.txt", sep = "\t", header = T, quote = "")
 
 #####################################################################################
 ######################## GENERATE REPLICATE TABLE ###################################
@@ -141,7 +141,7 @@ df.summary <- df.summary[order(df.summary$Sample, -df.summary$Reads),]
 ########################### IMPORT METADATA TABLE ###################################
 #####################################################################################
 # Add sample metadata to results file
-metadata <- read.table(sprintf("../metadata_%s.txt", runid), header = T, sep = "\t", comment.char = "", fill = T, check.names = F)
+metadata <- read.table(sprintf("../metadata_%s.txt", runid), header = T, sep = "\t", comment.char = "", quote = "", fill = T, check.names = F)
 names(metadata) <- c("Sample", "Collection Site", "Latitude", "Longitude", "Collection Start Date", "Collection End Date")
 
 #####################################################################################

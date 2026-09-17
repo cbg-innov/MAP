@@ -8,7 +8,7 @@ setwd(wkdir)
 library(Biostrings)
 
 # Import run-wide OTU information
-df <- read.table("all_otus_cluster_info.uc", header = FALSE, sep = "\t")
+df <- read.table("all_otus_cluster_info.uc", header = FALSE, sep = "\t", quote = "")
 names(df) <- c("Record_type",
                "Run_Wide_OTU_Cluster",
                "AlignmentLength",
