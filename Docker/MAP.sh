@@ -50,7 +50,9 @@ reference_lib_dir="${reference_lib_dir:-/MAP/REFS}"
 working_dir="${working_dir:-/MAP/Metabarcoding}" 
 scripts_dir="${scripts_dir:-/MAP/SCRIPTS}"     
 sintax_cutoff=0.6 #0-1
+pe_reads=0 #Off by default. Use --pe_reads to indicate a paired-end sequencing run (e.g., Illumina)
 componentreads=0 #Off by default. Use --componentreads to generate files.
+overwrite_output=0 #Off by default. Use --overwrite to replace a previous run's output without asking.
 cores_to_leave=2 #How many cores to leave free. MAP will use the rest.
 mem_to_leave=2 #How much RAM (in GB) to leave free.
 ref_seq_corr="${ref_seq_corr:-/MAP/REFS/reference_seqs_327K.fasta}" # File used for sequence correction
@@ -134,9 +136,17 @@ while [[ $# -gt 0 ]]; do
     --sintax_cutoff)
         sintax_cutoff="$2"
         shift 2
-        ;;   
+        ;;
+    --pe_reads)
+        pe_reads=1
+        shift
+        ;;           
     --componentreads)
         componentreads=1
+        shift
+        ;;
+    --overwrite)
+        overwrite_output=1
         shift
         ;;
     --cores_to_leave)
@@ -273,6 +283,7 @@ echo "Using reference directory: $reference_lib_dir"
 echo "Using working directory: $working_dir"
 echo "Using scripts directory: $scripts_dir"
 echo "Sintax cutoff: $sintax_cutoff"
+echo "Using paired-end reads: $([ "$pe_reads" -eq 1 ] && echo on || echo off)"
 echo "Saving OTU component reads: $([ "$componentreads" -eq 1 ] && echo on || echo off)"
 echo "Illumina chimera screen: $([ "$Ill_chimera_check" -eq 1 ] && echo on || echo off)"
 
@@ -367,9 +378,8 @@ task1() (
     
 
     #### FOR PAIRED END READS only - Chimera screen using UCHIME
-    if [[ "$pe_reads" = "Yes" ]]; then
-        #### Dereplicate. Required by cluster_unoise (--sizein/--minsize) whether or
-        #### not the chimera screen runs, so this must stay outside the check below.
+    if [ "$pe_reads" -eq 1 ]; then
+        #### Dereplicate. 
         vsearch --derep_fulllength "${sampleid}.fasta" \
             --output "${sampleid}.d.fasta" \
             --sizeout
@@ -392,7 +402,7 @@ task1() (
 
     #### Cluster 
     echo -e "******** Making low sequence variant clusters for $sampleid..."
-    if [[ "$pe_reads" = "Yes" ]]; then
+    if [ "$pe_reads" -eq 1 ]; then
         if [ "$componentreads" -eq 0 ]; then
            vsearch --cluster_unoise "${sampleid}.nonchimeras.fasta" \
             --consout "${sampleid}_consensus.fasta" \
@@ -564,6 +574,41 @@ fi
 mkdir -p "$working_dir" || { echo "ERROR: cannot create working directory '$working_dir'." >&2; exit 1; }
 cd "$working_dir" || { echo "ERROR: cannot enter working directory '$working_dir'." >&2; exit 1; }
 
+#### Ask to overwrite previous output directory, if detected.
+if [ -d ./output ] && [ -n "$(ls -A ./output 2>/dev/null)" ]; then
+    if [ "$overwrite_output" -eq 1 ]; then
+        echo "******** --overwrite given: removing previous results in ${working_dir}/output"
+        rm -rf ./output
+    elif [ -t 0 ]; then
+        echo
+        echo "A previous run's results already exist in:"
+        echo "    ${working_dir}/output"
+        echo
+        printf "Overwrite them? [y]es / [k]eep both / [N]o (abort): "
+        read -r reply
+        case "$reply" in
+            [Yy]*)
+                rm -rf ./output
+                echo "******** Previous results removed."
+                ;;
+            [Kk]*)
+                stamp=$(date +%Y%m%d-%H%M%S)
+                mv ./output "./output_${stamp}"
+                echo "******** Previous results moved to ${working_dir}/output_${stamp}"
+                ;;
+            *)
+                echo "Aborting. Re-run with --overwrite, or point --wd somewhere else." >&2
+                exit 1
+                ;;
+        esac
+    else
+        echo "ERROR: ${working_dir}/output already holds results from a previous run." >&2
+        echo "       Re-run with --overwrite, point --wd somewhere else, or remove it manually." >&2
+        echo "       (Not prompting because this run has no terminal attached.)" >&2
+        exit 1
+    fi
+fi
+
 python3.12 <<XL1
 import pandas as pd
 import re
@@ -618,13 +663,12 @@ dic.columns = [str(c).strip() for c in dic.columns]
 if dic.shape[0] == 0:
     sys.exit("ERROR: 'Dictionary Update' tab is empty.")
 
-run_cols = ["Paired-End Reads", "Min Reads per OTU", "Replicates per Sample",
+run_cols = ["Min Reads per OTU", "Replicates per Sample",
             "Intra-OTU Clustering Threshold", "Inter-OTU Clustering Threshold"]
 miss_run = [c for c in run_cols if c not in dic.columns]
 if miss_run:
     sys.exit(f"ERROR: 'Dictionary Update' missing run-level column(s): {miss_run}")
 
-pe_reads = str(cell(dic.iloc[0]["Paired-End Reads"])).strip()
 minreads = cell(dic.iloc[0]["Min Reads per OTU"])
 numreps  = cell(dic.iloc[0]["Replicates per Sample"])
 otu1     = cell(dic.iloc[0]["Intra-OTU Clustering Threshold"])
@@ -643,9 +687,9 @@ for _, d in dic.iterrows():
     lut[(str(d["Forward Primer Name"]).strip(),
          str(d["Reverse Primer Name"]).strip())] = d
 
-# runinfo.txt : runid, pe_reads, numreps, minreads, otu_dist1, otu_dist2 
+# runinfo.txt : runid, numreps, minreads, otu_dist1, otu_dist2 
 with open("runinfo.txt", "w") as f:
-    for v in [run_id, pe_reads, fmt(numreps), fmt(minreads), fmt(otu1), fmt(otu2)]:
+    for v in [run_id, fmt(numreps), fmt(minreads), fmt(otu1), fmt(otu2)]:
         f.write(f"{v}\n")
 
 #  mapping_<run>.txt : expand primer NAMES to sequences + dictionary fields 
@@ -684,13 +728,12 @@ sed -i.bak 's/\r$//' mapping*.txt && rm -f mapping*.txt.bak
 
 #### Extract info from parameters file
 read -r runid < <(sed -n '1p' runinfo.txt)
-read -r pe_reads < <(sed -n '2p' runinfo.txt)
-read -r numreps  < <(sed -n '3p' runinfo.txt)
+read -r numreps  < <(sed -n '2p' runinfo.txt)
 numreps=${numreps%.*}   # convert to integer
-read -r minreads < <(sed -n '4p' runinfo.txt)
+read -r minreads < <(sed -n '3p' runinfo.txt)
 minreads=${minreads%.*}   # convert to integer
-read -r otu_dist1  < <(sed -n '5p' runinfo.txt)
-read -r otu_dist2  < <(sed -n '6p' runinfo.txt)
+read -r otu_dist1  < <(sed -n '4p' runinfo.txt)
+read -r otu_dist2  < <(sed -n '5p' runinfo.txt)
 
 
 #### Extract forward and reverse UMIs from mapping file
@@ -777,7 +820,7 @@ if [ -f all.fastq.gz ]; then
 fi
 
 #### Merge paired-end reads (PAIRED-END READS only)
-if [ "$pe_reads" = "Yes" ]; then #if already a copy of all.fastq.gz present, skip this step. must be merged fastq of same input files!
+if [ "$pe_reads" -eq 1 ]; then #if already a copy of all.fastq.gz present, skip this step. must be merged fastq of same input files!
     if [ "$match" = "1" ]; then
         #### Decompress, but keep all.fastq.gz 
         echo -e ****** "decompressing all.fastq.gz"
@@ -816,7 +859,7 @@ fi
 #######################################################################
 
 #### Merge FASTQ files into single file
-if [ "$pe_reads" = "No" ]; then
+if [ "$pe_reads" -eq 0 ]; then
     echo -e "******** Merging FASTQ files..."
 
     # Decompress and concatenate all FASTQ files into single file.
@@ -836,7 +879,7 @@ fi
 seqkit stats -T all.fastq | awk 'NR==2 {print "Raw Reads\t"$4}' > "${runid}_readcounts.txt"
 
 #### Remove reads with low quality scores, and primer dimer forming reads that are outliers on the size distribution.
-if [ "$pe_reads" = "Yes" ]; then 
+if [ "$pe_reads" -eq 1 ]; then 
     vsearch --fastq_filter all.fastq --fastq_maxee $maxee --fastqout all_filt.fastq
 else
     chopper -q $minqual --minlength $min_read_and_primer_length --maxlength $max_read_and_primer_length < all.fastq > all_filt.fastq
@@ -922,7 +965,7 @@ paste fwd_primers.fasta rev_primers_rc.fasta \
 ' > linked_primers.fasta
 
 #### Orient sequences by searching the primers. This will make primers, umis, and other non-amplicon seqs lowercase. 
-if [ "$pe_reads" = "Yes" ]; then # No reverse complementing for Illumina
+if [ "$pe_reads" -eq 1 ]; then # No reverse complementing for Illumina
     cutadapt -j $cores \
         -g file:linked_primers.fasta \
         --action=lowercase \
@@ -1160,7 +1203,7 @@ find . -depth -name '*#*' | while read -r f; do
 done
 
 #### Make output dir
-mkdir ./output
+mkdir -p ./output
 
 #~#~#~#~#~#~#~#~#~#~#~#~#~#~##~#~#~#
 #~#~#~#~ MARKER FOR LOOP #~#~#~#~#~#
@@ -1325,7 +1368,7 @@ for marker_dir in */; do
 #######################################################################
 
     #### Chimera screen using UCHIME (only if ampsize is >= 200 bp)
-    if [[ "$ampsize" -ge 200 && "$pe_reads" = "No" ]]; then
+    if [[ "$ampsize" -ge 200 && "$pe_reads" -eq 0 ]]; then
         echo -e "******** Performing chimera screen..."
         vsearch --uchime_denovo all_otus_consensus.fasta2 \
         --chimeras all_otus_consensus.chimeras.fasta \
