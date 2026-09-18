@@ -799,16 +799,15 @@ if [ "$pe_reads" = "Yes" ]; then #if already a copy of all.fastq.gz present, ski
         echo -e "******** Merging paired-end reads..."
         echo "   R1: ${read1[0]}"
         echo "   R2: ${read2[0]}"
-        pear -j $cores -f "${read1[0]}" -r "${read2[0]}" -o $runid > log.txt
+        vsearch --fastq_mergepairs "${read1[0]}" -reverse "${read2[0]}" -fastqout all.fastq --threads $cores --log log.merge.txt
 
-        if [ ! -s "$runid.assembled.fastq" ]; then
-            echo "ERROR: PEAR produced no assembled reads. See log.txt." >&2
+        if [ ! -s all.fastq ]; then
+            echo "ERROR: Merge produced no assembled reads. See log.txt." >&2
             exit 1
         fi
 
         #### Delete discarded and unassembled paired-end reads
         rm -f $runid".discarded.fastq" $runid".unassembled.forward.fastq" $runid".unassembled.reverse.fastq"
-        mv $runid.assembled.fastq all.fastq
     fi
 fi
 
