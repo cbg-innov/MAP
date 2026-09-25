@@ -44,7 +44,7 @@ echo -e '\n\n\n########## STARTING MAP ANALYSIS ##########'
 #######################################################################                     
 
 
-fastq_file="${fastq_file:-/MAP/Metabarcoding/PHAUS_1K_RawReads.fastq.gz}" # You may use a wildcard here to refer to multiple files, but please assign a similar prefix! (e.g., PHAUS_Illumina_*.fastq.gz)
+fastq_file="${fastq_file:-/MAP/Metabarcoding/PHAUS_1K_RawReads.fastq.gz}" # One or more files; a wildcard works quoted or unquoted, but please assign a similar prefix! (e.g., PHAUS_Illumina_*.fastq.gz)
 params_file="${params_file:-/MAP/Metabarcoding/parameters.xlsx}"
 reference_lib_dir="${reference_lib_dir:-/MAP/REFS}"
 working_dir="${working_dir:-/MAP/Metabarcoding}" 
@@ -114,8 +114,18 @@ mem_per_job_mult=6 # Safety multiplier applied to the largest sample file when e
 while [[ $# -gt 0 ]]; do
  case "$1" in 
     --fastq)
-        fastq_file="$2" 
-        shift 2 
+        #### Accept any number of files, so an unquoted glob works (--fastq /data/*.fastq.gz).
+        #### A quoted glob ("/data/*.fastq.gz") still works too; it is expanded below.
+        shift
+        fastq_file=""
+        while [[ $# -gt 0 && "$1" != --* ]]; do
+            fastq_file="${fastq_file:+$fastq_file }$1"
+            shift
+        done
+        if [ -z "$fastq_file" ]; then
+            echo "ERROR: --fastq needs at least one file." >&2
+            exit 1
+        fi
         ;;
     --params)
         params_file="$2"
@@ -270,14 +280,24 @@ done
 
 #### Resolve relative input paths against the launch directory (BEFORE any cd) (to avoid using the full $HOME path). 
 make_abs() { case "$1" in /*) printf '%s' "$1" ;; "") printf '' ;; *) printf '%s/%s' "$PWD" "$1" ;; esac; }
-fastq_file="$(make_abs "$fastq_file")"
+fastq_abs=""
+for f in $fastq_file; do
+    fastq_abs="${fastq_abs:+$fastq_abs }$(make_abs "$f")"
+done
+fastq_file="$fastq_abs"
+for f in $fastq_file; do
+    if [ ! -f "$f" ]; then
+        echo "ERROR: --fastq input not found: $f" >&2
+        exit 1
+    fi
+done
 params_file="$(make_abs "$params_file")"
 reference_lib_dir="$(make_abs "$reference_lib_dir")"
 working_dir="$(make_abs "$working_dir")"
 scripts_dir="$(make_abs "$scripts_dir")"
 ref_seq_corr="$(make_abs "$ref_seq_corr")"
 
-echo "Using fastq file: $fastq_file"
+echo "Using fastq file(s): $fastq_file"
 echo "Using parameters file: $params_file"
 echo "Using reference directory: $reference_lib_dir"
 echo "Using working directory: $working_dir"
@@ -610,6 +630,7 @@ if [ -d ./output ] && [ -n "$(ls -A ./output 2>/dev/null)" ]; then
 fi
 
 python3.12 <<XL1
+import os
 import pandas as pd
 import re
 import sys
@@ -686,6 +707,28 @@ lut = {}
 for _, d in dic.iterrows():
     lut[(str(d["Forward Primer Name"]).strip(),
          str(d["Reverse Primer Name"]).strip())] = d
+
+#  rc_primers_<run>.txt : optional 'Reverse Complement' column in 'Dictionary Update'.
+#  Flag the rows whose reads come off the sequencer on the minus strand (e.g. plates
+#  built with the primer layout reversed). Those reads are demultiplexed as-is, then
+#  reverse-complemented after trimming so every sample reaches clustering, sintax and
+#  BIN matching on the plus strand. Column absent or blank = normal behaviour.
+RC_COL = "Reverse Complement"
+RC_YES = {"yes", "y", "1", "true", "-", "minus", "reverse", "rc"}
+rc_pairs = []
+if RC_COL in dic.columns:
+    for _, d in dic.iterrows():
+        if str(cell(d[RC_COL])).strip().lower() in RC_YES:
+            rc_pairs.append((str(d["Forward Primer Sequence"]).strip(),
+                             str(d["Reverse Primer Sequence"]).strip()))
+rc_file = f"rc_primers_{run_id}.txt"
+if rc_pairs:
+    with open(rc_file, "w") as fh:
+        for fwd_seq, rev_seq in rc_pairs:
+            fh.write(f"{fwd_seq}\t{rev_seq}\n")
+    print(f"Reads will be reverse-complemented for {len(rc_pairs)} '{RC_COL}' row(s) in 'Dictionary Update'.")
+elif os.path.exists(rc_file):
+    os.remove(rc_file)   # never let a previous run's flags leak into this one
 
 # runinfo.txt : runid, numreps, minreads, otu_dist1, otu_dist2 
 with open("runinfo.txt", "w") as f:
@@ -863,7 +906,6 @@ if [ "$pe_reads" -eq 0 ]; then
     echo -e "******** Merging FASTQ files..."
 
     # Decompress and concatenate all FASTQ files into single file.
-    ulimit -n 65536
     echo $fastq_file | tr ' ' '\n' | xargs pigz -p $cores -dc > all.fastq2
     
     # Remove any extra text from sequence headers
@@ -874,6 +916,28 @@ fi
 #######################################################################
 ############## STEP 4: Filter, demultiplex, primer trim ###############
 #######################################################################
+
+#### Demultiplexing opens one output file per UMI pair, so a run with many
+#### plates needs far more descriptors than the usual 1024 default. Without
+#### this, cutadapt aborts partway and the LAST wells in the mapping file are
+#### silently left empty.
+fd_want=65536
+fd_hard=$(ulimit -Hn 2>/dev/null || echo "$fd_want")
+[ "$fd_hard" = "unlimited" ] && fd_hard=$fd_want
+[ "$fd_want" -gt "$fd_hard" ] && fd_want=$fd_hard
+ulimit -n "$fd_want" 2>/dev/null
+fd_now=$(ulimit -n)
+umi_pairs=$(awk -F'\t' 'NR>1 && $6!="" && $7!="" {print $6"\t"$7}' "mapping_${runid}.txt" | sort -u | wc -l)
+echo "Open-file limit: $fd_now (need roughly $umi_pairs for demultiplexing)"
+if [ "$fd_now" -lt $(( umi_pairs + 64 )) ]; then
+    echo "ERROR: open-file limit ($fd_now) is too low for $umi_pairs UMI pairs." >&2
+    echo "       cutadapt would abort partway and silently drop the last samples." >&2
+    echo "       Raise it on the container, e.g. in compose.yaml:" >&2
+    echo "           ulimits:" >&2
+    echo "             nofile: {soft: 65536, hard: 65536}" >&2
+    echo "       or run docker with --ulimit nofile=65536:65536" >&2
+    exit 1
+fi
 
 #### Count raw reads, write to readcounts file.
 seqkit stats -T all.fastq | awk 'NR==2 {print "Raw Reads\t"$4}' > "${runid}_readcounts.txt"
@@ -908,9 +972,14 @@ fi
 
 #### Extract forward and reverse primers from mapping file. Function to handle all permutations of primers.
 
-awk -F'\t' -v err1="$error_primer1" -v err2="$error_primer2" -v prim_ov=$primer_overlap_min '
+awk -F'\t' -v err1="$error_primer1" -v err2="$error_primer2" -v prim_ov=$primer_overlap_min -v rcfile="rc_primers_${runid}.txt" '
 function trim(s) { gsub(/^[ \t\r]+/, "", s); gsub(/[ \t\r]+$/, "", s); return s }
+BEGIN {
+    while ((getline line < rcfile) > 0) { split(line, p, "\t"); rcpair[trim(p[1]) SUBSEP trim(p[2])] = 1 }
+    close(rcfile)
+}
 NR>1 && $4!="" && $4!="NA" && $5!="" && $5!="NA" {
+    isrc = ((trim($4) SUBSEP trim($5)) in rcpair) ? 1 : 0
     nf = split($4, F, ",")
     nr = split($5, R, ",")
     for (a = 1; a <= nf; a++) {
@@ -919,24 +988,31 @@ NR>1 && $4!="" && $4!="NA" && $5!="" && $5!="NA" {
             rs = trim(R[b]); if (rs == "" || rs == "NA") continue
             key = fs SUBSEP rs
             if (!(key in seen)) {
-                seen[key] = 1
+                seen[key] = isrc + 1
                 n++
                 f[n] = fs
                 r[n] = rs
+                m[n] = isrc
                 fnum[n] = int(length(fs) * prim_ov)
                 rnum[n] = int(length(rs) * prim_ov)
+            } else if (seen[key] != isrc + 1) {
+                conflict = conflict "\n    " fs " / " rs
             }
         }
     }
 }
 END {
+    if (conflict != "") {
+        print "ERROR: primer pair(s) listed both with and without \"Reverse Complement\" in Dictionary Update:" conflict > "/dev/stderr"
+        exit 1
+    }
     for (i=1;i<=n;i++)
-        print ">"f[i]"\n"f[i]";min_overlap="fnum[i]";max_error_rate=" err1 > "fwd_primers.fasta"
+        print ">"f[i] (m[i] ? "__rc" : "") "\n"f[i]";min_overlap="fnum[i]";max_error_rate=" err1 > "fwd_primers.fasta"
 
     for (i=1;i<=n;i++)
         print ">"r[i]";min_overlap="rnum[i]";max_error_rate=" err2 "\n"r[i] > "rev_primers.fasta"
 }
-' mapping_"${runid}.txt"
+' mapping_"${runid}.txt" || exit 1
 
 seqtk seq -r -c rev_primers.fasta > rev_primers_rc_raw.fasta
 rm rev_primers.fasta
@@ -964,17 +1040,36 @@ paste fwd_primers.fasta rev_primers_rc.fasta \
     }
 ' > linked_primers.fasta
 
+#### 'Reverse Complement' rows: tag every read with the linked primer it matched, so
+#### minus-strand reads can be flipped AFTER demultiplexing. Flipping any earlier
+#### would move reads between samples whose UMIs are the same oligos swapped.
+rc_rows=0
+if [ -s "rc_primers_${runid}.txt" ]; then
+    rc_rows=$(awk 'END {print NR}' "rc_primers_${runid}.txt")
+fi
+primer_tag=()
+if [ "$rc_rows" -gt 0 ]; then
+    if [ "$symm" = "symmetrical UMIs" ]; then
+        echo "ERROR: 'Reverse Complement' rows are not supported with symmetrical UMIs." >&2
+        echo "       The single-UMI rescue step rewrites read headers, losing the orientation tag." >&2
+        exit 1
+    fi
+    primer_tag=(--rename "{header} lp={adapter_name}")
+fi
+
 #### Orient sequences by searching the primers. This will make primers, umis, and other non-amplicon seqs lowercase. 
 if [ "$pe_reads" -eq 1 ]; then # No reverse complementing for Illumina
     cutadapt -j $cores \
         -g file:linked_primers.fasta \
         --action=lowercase \
+        "${primer_tag[@]}" \
         -o "${runid}"_g_link_primer.fastq \
         all_filt.fastq 
     else #### Allow reverse complementing for non-Illumina
         cutadapt -j $cores \
         -g file:linked_primers.fasta \
         --action=lowercase \
+        "${primer_tag[@]}" \
         -o "${runid}"_g_link_primer.fastq \
         all_filt.fastq \
         --revcomp    
@@ -991,7 +1086,11 @@ cutadapt -j $cores \
     --action=trim \
     -o {name}.fastq \
     "${runid}"_g_link_primer.fastq \
-    --untrimmed-output "${runid}"_unt.fwd.fastq 
+    --untrimmed-output "${runid}"_unt.fwd.fastq
+if [ $? -ne 0 ]; then
+    echo "ERROR: demultiplexing failed. Results would be incomplete, so stopping here." >&2
+    exit 1
+fi
 
 #### Get read count of demultiplexed reads with linked UMIs
 sum=0
@@ -1138,9 +1237,24 @@ find . -type f -name "*.fastq" -size 0 -delete
 tar -cf - *.fastq | pigz -p $cores > Individual_Raw_Fastq_Files.tar.gz
 
 #### Convert to fasta and rename read headers to shorter versions (if spaces in raw read headers)
-parallel -j $cores '
-    seqkit fq2fa {} | cut -d" " -f1 > {.}.fasta
-' ::: *.fastq
+if [ "$rc_rows" -gt 0 ]; then
+    #### Also reverse-complement reads tagged with a 'Reverse Complement' linked primer.
+    #### Case is kept, so strip_lower still removes the lowercase UMI/primer flanks.
+    cat > orient_reads.awk <<'AWK'
+BEGIN { from = "ACGTNacgtnRYKMBVDHSWrykmbvdhsw"; to = "TGCANtgcanYRMKVBHDSWyrmkvbhdsw" }
+/^>/  { flip = ($0 ~ / lp=[^ ]*__rc/); sub(/ .*/, ""); print; next }
+flip  { s = ""; for (i = length($0); i > 0; i--) { c = substr($0, i, 1); j = index(from, c); s = s (j ? substr(to, j, 1) : c) }; print s; next }
+      { print }
+AWK
+    parallel -j $cores '
+        seqkit fq2fa {} | awk -f orient_reads.awk > {.}.fasta
+    ' ::: *.fastq
+    rm -f orient_reads.awk
+else
+    parallel -j $cores '
+        seqkit fq2fa {} | cut -d" " -f1 > {.}.fasta
+    ' ::: *.fastq
+fi
 rm *.fastq
 
 #### Generate heat map of demultiplexed reads by well per plate
@@ -1631,6 +1745,9 @@ echo "==============================="
 } >> ./output/pipeline.log
 
 mv Demultiplexing_Results_* Individual_Raw_Fastq_Files* *_readcounts.txt metadata* mapping* runinfo.txt name_map.tsv ./output/
+if [ -f "rc_primers_${runid}.txt" ]; then
+    mv "rc_primers_${runid}.txt" ./output/
+fi
 
 
 
