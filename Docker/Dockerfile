@@ -16,7 +16,6 @@ RUN micromamba create -y -n map -c conda-forge -c bioconda -c anaconda \
     python=3.12 \
     snakemake-minimal=9.16.3 \
     r-base=4.5.2 \
-    pear=0.9.6 \
     seqkit=2.12.0 \
     libgcc=15.2.0 \
     cutadapt=5.2 \

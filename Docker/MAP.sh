@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
+umask 000
 clear
 START_TIME=$(date +%s)
 start_human=$(date "+%Y-%m-%d %H:%M:%S")
 echo -e '\n\n\n########## STARTING MAP ANALYSIS ##########'
-# v 1.0
+# v 2.0.0
 
 
 # REQUIREMENTS:
@@ -43,14 +44,17 @@ echo -e '\n\n\n########## STARTING MAP ANALYSIS ##########'
 #######################################################################                     
 
 
-fastq_file="${fastq_file:-/MAP/Metabarcoding/PHAUS_1K_RawReads.fastq.gz}" # You may use a wildcard here to refer to multiple files, but please assign a similar prefix! (e.g., PHAUS_Illumina_*.fastq.gz)
+fastq_file="${fastq_file:-/MAP/Metabarcoding/PHAUS_1K_RawReads.fastq.gz}" # One or more files; a wildcard works quoted or unquoted, but please assign a similar prefix! (e.g., PHAUS_Illumina_*.fastq.gz)
 params_file="${params_file:-/MAP/Metabarcoding/parameters.xlsx}"
 reference_lib_dir="${reference_lib_dir:-/MAP/REFS}"
 working_dir="${working_dir:-/MAP/Metabarcoding}" 
 scripts_dir="${scripts_dir:-/MAP/SCRIPTS}"     
 sintax_cutoff=0.6 #0-1
-componentreads=0 #1 for yes, 0 for no
+pe_reads=0 #Off by default. Use --pe_reads to indicate a paired-end sequencing run (e.g., Illumina)
+componentreads=0 #Off by default. Use --componentreads to generate files.
+overwrite_output=0 #Off by default. Use --overwrite to replace a previous run's output without asking.
 cores_to_leave=2 #How many cores to leave free. MAP will use the rest.
+mem_to_leave=2 #How much RAM (in GB) to leave free.
 ref_seq_corr="${ref_seq_corr:-/MAP/REFS/reference_seqs_327K.fasta}" # File used for sequence correction
 
 #~#~#~#~#~#~#~#~#~#~#
@@ -80,8 +84,9 @@ min_read_and_primer_length=100
 max_read_and_primer_length=1000
 
 # Chimera removal (Illumina)
-Ill_abskew=10 # Only for paired-end (e.g., Illumina) data. Parameter to be used for the VSEARCH's uchime_denovo command (abskew)
-Ill_mindiv=0.0005 #Only for paired-end (e.g., Illumina) data. Parameter to be used for the VSEARCH's uchime_denovo command (mindiv)
+Ill_chimera_check=1 #On by default. --no_Ill_chimera_check to skip UCHIME chimera screen.
+Ill_abskew=2 # Only for paired-end (e.g., Illumina) data. Parameter to be used for the VSEARCH's uchime_denovo command (abskew)
+Ill_mindiv=0.8 #Only for paired-end (e.g., Illumina) data. Parameter to be used for the VSEARCH's uchime_denovo command (mindiv)
 
 # Chimera removal (long read data)
 LR_abskew=10 # Only for long read (e.g., Oxford Nanopore) data. Parameter to be used for the VSEARCH's uchime_denovo command (abskew)
@@ -102,12 +107,23 @@ BIN_percent_ID=0.85 # We recommend 0.85 for short-read data. This is the thresho
 BIN_maxaccepts=3 #parameter to feed VSEARCH's usearch_global command.
 BIN_maxhits=3 #parameter to feed VSEARCH's usearch_global command.
 
+mem_per_job=auto #memory useage per parallel job. 'auto' estimates RAM needs from the largest individual file (i.e., a sample). Enter a number (in GB) to override 'auto' estimate.
+mem_per_job_mult=6 # Safety multiplier applied to the largest sample file when estimating.
+
 
 while [[ $# -gt 0 ]]; do
  case "$1" in 
     --fastq)
-        fastq_file="$2" 
-        shift 2 
+        shift
+        fastq_file=""
+        while [[ $# -gt 0 && "$1" != --* ]]; do
+            fastq_file="${fastq_file:+$fastq_file }$1"
+            shift
+        done
+        if [ -z "$fastq_file" ]; then
+            echo "ERROR: --fastq needs at least one file." >&2
+            exit 1
+        fi
         ;;
     --params)
         params_file="$2"
@@ -128,13 +144,29 @@ while [[ $# -gt 0 ]]; do
     --sintax_cutoff)
         sintax_cutoff="$2"
         shift 2
-        ;;   
+        ;;
+    --pe_reads)
+        pe_reads=1
+        shift
+        ;;           
     --componentreads)
-        componentreads="$2"
-        shift 2
+        componentreads=1
+        shift
+        ;;
+    --overwrite)
+        overwrite_output=1
+        shift
         ;;
     --cores_to_leave)
         cores_to_leave="$2"
+        shift 2
+        ;;
+    --mem_to_leave)
+        mem_to_leave="$2"
+        shift 2
+        ;;
+    --mem_per_job)
+        mem_per_job="$2"
         shift 2
         ;;
     --ref_seq_corr)
@@ -181,6 +213,10 @@ while [[ $# -gt 0 ]]; do
         max_read_and_primer_length="$2"
         shift 2
         ;;     
+    --no_Ill_chimera_check)
+        Ill_chimera_check=0
+        shift
+        ;;
     --Ill_abskew)
         Ill_abskew="$2"
         shift 2
@@ -242,20 +278,42 @@ done
 
 #### Resolve relative input paths against the launch directory (BEFORE any cd) (to avoid using the full $HOME path). 
 make_abs() { case "$1" in /*) printf '%s' "$1" ;; "") printf '' ;; *) printf '%s/%s' "$PWD" "$1" ;; esac; }
-fastq_file="$(make_abs "$fastq_file")"
+fastq_abs=""
+for f in $fastq_file; do
+    fastq_abs="${fastq_abs:+$fastq_abs }$(make_abs "$f")"
+done
+fastq_file="$fastq_abs"
+for f in $fastq_file; do
+    if [ ! -f "$f" ]; then
+        echo "ERROR: --fastq input not found: $f" >&2
+        exit 1
+    fi
+done
+
+#### Issue warning if fastq files containing 'R1' and 'R2' are detected, but -pe_reads is not turned on.
+if [ "$pe_reads" -eq 0 ]; then
+    n_r1=$(printf '%s\n' $fastq_file | grep -cE '_R1[_.]|_1\.fastq')
+    n_r2=$(printf '%s\n' $fastq_file | grep -cE '_R2[_.]|_2\.fastq')
+    if [ "$n_r1" -gt 0 ] && [ "$n_r2" -gt 0 ]; then
+        echo "WARNING: the --fastq files look like paired-end R1/R2 mates, but --pe_reads was not given." >&2
+        echo "         They will be analysed as single-end (long-read) data. Add --pe_reads if they are Illumina pairs." >&2
+    fi
+fi
 params_file="$(make_abs "$params_file")"
 reference_lib_dir="$(make_abs "$reference_lib_dir")"
 working_dir="$(make_abs "$working_dir")"
 scripts_dir="$(make_abs "$scripts_dir")"
 ref_seq_corr="$(make_abs "$ref_seq_corr")"
 
-echo "Using fastq file: $fastq_file"
+echo "Using fastq file(s): $fastq_file"
 echo "Using parameters file: $params_file"
 echo "Using reference directory: $reference_lib_dir"
 echo "Using working directory: $working_dir"
 echo "Using scripts directory: $scripts_dir"
 echo "Sintax cutoff: $sintax_cutoff"
-echo "Using component reads (1 for yes, 0 for no): $componentreads"
+echo "Using paired-end reads: $([ "$pe_reads" -eq 1 ] && echo on || echo off)"
+echo "Saving OTU component reads: $([ "$componentreads" -eq 1 ] && echo on || echo off)"
+echo "Illumina chimera screen: $([ "$Ill_chimera_check" -eq 1 ] && echo on || echo off)"
 
 #### Report which reference library MAP will use, and fetch the BOLDdistilled
 #### sintax library on first use if none is present.
@@ -347,27 +405,32 @@ task1() (
     local sampleid="$(basename "$fasta" .fasta)"
     
 
-    #### FOR PAIRED END READS only - Chimera screen using UCHIME (only if ampsize is >= 200 bp)
-    if [[ "$ampsize" -ge 200 && "$pe_reads" = "Yes" ]]; then        
-        # Dereplicate for chimera screen
+    #### FOR PAIRED END READS only - Chimera screen using UCHIME
+    if [ "$pe_reads" -eq 1 ]; then
+        #### Dereplicate. 
         vsearch --derep_fulllength "${sampleid}.fasta" \
-        --output "${sampleid}.d.fasta" \
-        --sizeout 
-        wait
-        echo -e "******** Performing chimera screen..."
-        vsearch --uchime_denovo "${sampleid}.d.fasta" \
-        --chimeras "${sampleid}.chimeras.fasta" \
-        --nonchimeras "${sampleid}.nonchimeras.fasta" \
-        --fasta_width 0 \
-        --abskew $Ill_abskew \
-        --mindiv $Ill_mindiv
+            --output "${sampleid}.d.fasta" \
+            --sizeout
+
+        if [ "$Ill_chimera_check" -eq 1 ]; then
+            echo -e "******** Performing chimera screen..."
+            vsearch --uchime_denovo "${sampleid}.d.fasta" \
+                --chimeras "${sampleid}.chimeras.fasta" \
+                --nonchimeras "${sampleid}.nonchimeras.fasta" \
+                --fasta_width 0 \
+                --abskew $Ill_abskew \
+                --mindiv $Ill_mindiv
+        else
+            echo -e "******** Chimera screen disabled (--no_Ill_chimera_check), skipping..."
+            mv "${sampleid}.d.fasta" "${sampleid}".nonchimeras.fasta
+        fi
     else
         mv "${sampleid}.fasta" "${sampleid}".nonchimeras.fasta
     fi
 
     #### Cluster 
     echo -e "******** Making low sequence variant clusters for $sampleid..."
-    if [[ "$pe_reads" = "Yes" ]]; then
+    if [ "$pe_reads" -eq 1 ]; then
         if [ "$componentreads" -eq 0 ]; then
            vsearch --cluster_unoise "${sampleid}.nonchimeras.fasta" \
             --consout "${sampleid}_consensus.fasta" \
@@ -501,10 +564,81 @@ task1() (
 #### Detect number of cores
 cores=$(($(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu) - $cores_to_leave))
 
+#### Detect usable memory - This will automatically use Docker settings.
+if [ -r /proc/meminfo ]; then
+    mem_total_kb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+    if [ -r /sys/fs/cgroup/memory.max ]; then
+        cg_max=$(cat /sys/fs/cgroup/memory.max)
+        [ "$cg_max" != max ] && mem_total_kb=$(( cg_max / 1024 ))
+    fi
+else
+    mem_total_kb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 ))
+fi
+mem_total=$(( mem_total_kb / 1024 / 1024 ))
+
+if [ "$mem_total" -lt 1 ]; then
+    echo "NOTE: could not compute memory of machine."
+    echo "      MAP parallelization will be controlled by core count alone"
+    mem_budget=0
+else
+    #### Never reserve more than a quarter of what the container actually has.
+    mem_leave_cap=$(( mem_total / 4 ))
+    [ "$mem_leave_cap" -lt 1 ] && mem_leave_cap=1
+    if [ "$mem_to_leave" -gt "$mem_leave_cap" ]; then
+        echo "NOTE: --mem_to_leave (${mem_to_leave}GB) exceeds a quarter of the ${mem_total}GB available; using ${mem_leave_cap}GB."
+        mem_to_leave=$mem_leave_cap
+    fi
+
+    mem_budget=$(( mem_total - mem_to_leave ))
+    if [ "$mem_budget" -lt 1 ]; then
+        echo "WARNING: --mem_to_leave (${mem_to_leave}GB) is larger than the ${mem_total}GB this machine offers."
+        echo "         Falling back to 1GB. Lower --mem_to_leave to use more of it."
+        mem_budget=1
+    fi
+fi
+
+
 #### Collect and reformat parameters information
-cd $working_dir
+mkdir -p "$working_dir" || { echo "ERROR: cannot create working directory '$working_dir'." >&2; exit 1; }
+cd "$working_dir" || { echo "ERROR: cannot enter working directory '$working_dir'." >&2; exit 1; }
+
+#### Ask to overwrite previous output directory, if detected.
+if [ -d ./output ] && [ -n "$(ls -A ./output 2>/dev/null)" ]; then
+    if [ "$overwrite_output" -eq 1 ]; then
+        echo "******** --overwrite given: removing previous results in ${working_dir}/output"
+        rm -rf ./output
+    elif [ -t 0 ]; then
+        echo
+        echo "A previous run's results already exist in:"
+        echo "    ${working_dir}/output"
+        echo
+        printf "Overwrite them? [y]es / [k]eep both / [N]o (abort): "
+        read -r reply
+        case "$reply" in
+            [Yy]*)
+                rm -rf ./output
+                echo "******** Previous results removed."
+                ;;
+            [Kk]*)
+                stamp=$(date +%Y%m%d-%H%M%S)
+                mv ./output "./output_${stamp}"
+                echo "******** Previous results moved to ${working_dir}/output_${stamp}"
+                ;;
+            *)
+                echo "Aborting. Re-run with --overwrite, or point --wd somewhere else." >&2
+                exit 1
+                ;;
+        esac
+    else
+        echo "ERROR: ${working_dir}/output already holds results from a previous run." >&2
+        echo "       Re-run with --overwrite, point --wd somewhere else, or remove it manually." >&2
+        echo "       (Not prompting because this run has no terminal attached.)" >&2
+        exit 1
+    fi
+fi
 
 python3.12 <<XL1
+import os
 import pandas as pd
 import re
 import sys
@@ -555,16 +689,33 @@ up = up[up["Sample"].notna() & (up["Sample"].astype(str).str.strip() != "")]
 # 'Dictionary Update': primer lookup + run-level params 
 dic = pd.read_excel(PF, sheet_name="Dictionary Update")
 dic.columns = [str(c).strip() for c in dic.columns]
+
+# Older parameters files record paired-end in a 'Paired-End Reads' column; it is now the
+# --pe_reads flag. If such a column is present it must agree with the flag.
+PE_FLAG = int("${pe_reads}")
+if "Paired-End Reads" in dic.columns:
+    pe_vals = {str(v).strip().lower() for v in dic["Paired-End Reads"] if str(cell(v)).strip()}
+    pe_yes = pe_vals & {"yes", "y", "true", "1"}
+    pe_no = pe_vals & {"no", "n", "false", "0"}
+    if pe_yes and pe_no:
+        sys.exit("ERROR: 'Paired-End Reads' in 'Dictionary Update' mixes Yes and No. "
+                 "A run is either paired-end or not; fix the column, or delete it and use --pe_reads.")
+    if pe_yes and not PE_FLAG:
+        sys.exit("ERROR: this parameters file says 'Paired-End Reads: Yes', but --pe_reads was not given.\n"
+                 "       Paired-end is now set with the --pe_reads flag. Add --pe_reads to your command\n"
+                 "       (you can then delete the 'Paired-End Reads' column).")
+    if pe_no and PE_FLAG:
+        sys.exit("ERROR: --pe_reads was given, but this parameters file says 'Paired-End Reads: No'.\n"
+                 "       Remove --pe_reads for long-read data, or fix/delete the 'Paired-End Reads' column.")
 if dic.shape[0] == 0:
     sys.exit("ERROR: 'Dictionary Update' tab is empty.")
 
-run_cols = ["Paired-End Reads", "Min Reads per OTU", "Replicates per Sample",
+run_cols = ["Min Reads per OTU", "Replicates per Sample",
             "Intra-OTU Clustering Threshold", "Inter-OTU Clustering Threshold"]
 miss_run = [c for c in run_cols if c not in dic.columns]
 if miss_run:
     sys.exit(f"ERROR: 'Dictionary Update' missing run-level column(s): {miss_run}")
 
-pe_reads = str(cell(dic.iloc[0]["Paired-End Reads"])).strip()
 minreads = cell(dic.iloc[0]["Min Reads per OTU"])
 numreps  = cell(dic.iloc[0]["Replicates per Sample"])
 otu1     = cell(dic.iloc[0]["Intra-OTU Clustering Threshold"])
@@ -583,9 +734,27 @@ for _, d in dic.iterrows():
     lut[(str(d["Forward Primer Name"]).strip(),
          str(d["Reverse Primer Name"]).strip())] = d
 
-# runinfo.txt : runid, pe_reads, numreps, minreads, otu_dist1, otu_dist2 
+
+RC_COL = "Reverse Complement"
+RC_YES = {"yes", "y", "1", "true", "-", "minus", "reverse", "rc"}
+rc_pairs = []
+if RC_COL in dic.columns:
+    for _, d in dic.iterrows():
+        if str(cell(d[RC_COL])).strip().lower() in RC_YES:
+            rc_pairs.append((str(d["Forward Primer Sequence"]).strip(),
+                             str(d["Reverse Primer Sequence"]).strip()))
+rc_file = f"rc_primers_{run_id}.txt"
+if rc_pairs:
+    with open(rc_file, "w") as fh:
+        for fwd_seq, rev_seq in rc_pairs:
+            fh.write(f"{fwd_seq}\t{rev_seq}\n")
+    print(f"Reads will be reverse-complemented for {len(rc_pairs)} '{RC_COL}' row(s) in 'Dictionary Update'.")
+elif os.path.exists(rc_file):
+    os.remove(rc_file)   # never let a previous run's flags leak into this one
+
+# runinfo.txt : runid, numreps, minreads, otu_dist1, otu_dist2 
 with open("runinfo.txt", "w") as f:
-    for v in [run_id, pe_reads, fmt(numreps), fmt(minreads), fmt(otu1), fmt(otu2)]:
+    for v in [run_id, fmt(numreps), fmt(minreads), fmt(otu1), fmt(otu2)]:
         f.write(f"{v}\n")
 
 #  mapping_<run>.txt : expand primer NAMES to sequences + dictionary fields 
@@ -618,19 +787,22 @@ meta_sheet = "Bulk Sample Metadata" if "Bulk Sample Metadata" in xls.sheet_names
 metadata = pd.read_excel(PF, sheet_name=meta_sheet)
 metadata.to_csv(f"metadata_{run_id}.txt", sep="\t", header=True, index=False)
 XL1
+if [ $? -ne 0 ]; then
+    echo "ERROR: stopping — the parameters file could not be read or was rejected (see the message above)." >&2
+    exit 1
+fi
 
 #### Remove any Windows carriage returns from mapping file
 sed -i.bak 's/\r$//' mapping*.txt && rm -f mapping*.txt.bak
 
 #### Extract info from parameters file
 read -r runid < <(sed -n '1p' runinfo.txt)
-read -r pe_reads < <(sed -n '2p' runinfo.txt)
-read -r numreps  < <(sed -n '3p' runinfo.txt)
+read -r numreps  < <(sed -n '2p' runinfo.txt)
 numreps=${numreps%.*}   # convert to integer
-read -r minreads < <(sed -n '4p' runinfo.txt)
+read -r minreads < <(sed -n '3p' runinfo.txt)
 minreads=${minreads%.*}   # convert to integer
-read -r otu_dist1  < <(sed -n '5p' runinfo.txt)
-read -r otu_dist2  < <(sed -n '6p' runinfo.txt)
+read -r otu_dist1  < <(sed -n '4p' runinfo.txt)
+read -r otu_dist2  < <(sed -n '5p' runinfo.txt)
 
 
 #### Extract forward and reverse UMIs from mapping file
@@ -689,13 +861,26 @@ min_umi_len_rev=$(awk 'NR>1 {print length($0)}' rev_umis_rc.fasta | sort -n | he
 ############ STEP 3a: Merge PE reads (Illumina only) ##################
 #######################################################################
 
+fastq_prefix() {
+    case "$1" in
+        *.gz) gzip -dc "$1" 2>/dev/null | head -c 5 ;;
+        *)    head -c 5 "$1" 2>/dev/null ;;
+    esac
+}
 #### Check if any file matching the pattern shares the same prefix as all.fastq.gz (to save time for repeat analysis)
+fastq_prefix() {
+    case "$1" in
+        *.gz) gzip -dc "$1" 2>/dev/null | head -c 5 ;;
+        *)    head -c 5 "$1" 2>/dev/null ;;
+    esac
+}
+
 match=0
 if [ -f all.fastq.gz ]; then
     prefix_all=$(gzip -dc all.fastq.gz 2>/dev/null | head -c 5)
     for f in $fastq_file; do
         [ -f "$f" ] || continue
-        prefix_f=$(gzip -dc "$f" 2>/dev/null | head -c 5)
+        prefix_f=$(fastq_prefix "$f")
         if [ "$prefix_all" = "$prefix_f" ]; then
             match=1
             break
@@ -704,7 +889,7 @@ if [ -f all.fastq.gz ]; then
 fi
 
 #### Merge paired-end reads (PAIRED-END READS only)
-if [ "$pe_reads" = "Yes" ]; then #if already a copy of all.fastq.gz present, skip this step. must be merged fastq of same input files!
+if [ "$pe_reads" -eq 1 ]; then #if already a copy of all.fastq.gz present, skip this step. must be merged fastq of same input files!
     if [ "$match" = "1" ]; then
         #### Decompress, but keep all.fastq.gz 
         echo -e ****** "decompressing all.fastq.gz"
@@ -713,16 +898,28 @@ if [ "$pe_reads" = "Yes" ]; then #if already a copy of all.fastq.gz present, ski
         echo "WARNING: all.fastq.gz exists but does not match input files. Renaming to OLD_all.fastq.gz and re-merging."
         mv all.fastq.gz OLD_all.fastq.gz
         #### Get read1 and read2 from fastq files. must follow either _R1* / _R2* OR _1.fastq.gz /_2.fastq.gz convention.
-        read1=( $(ls *.gz | grep -E '_R1[_.]|_1\.fastq') )
-        read2=( $(ls *.gz | grep -E '_R2[_.]|_2\.fastq') )
+        read1=( $(ls $fastq_file 2>/dev/null | grep -E '_R1[_.]|_1\.fastq') )
+        read2=( $(ls $fastq_file 2>/dev/null | grep -E '_R2[_.]|_2\.fastq') )
+
+        if [ ${#read1[@]} -eq 0 ] || [ ${#read2[@]} -eq 0 ]; then
+            echo "ERROR: could not find paired R1/R2 files matching --fastq '$fastq_file'." >&2
+            echo "       Files must follow the _R1_/_R2_ or _1.fastq/_2.fastq naming convention." >&2
+            exit 1
+        fi
 
         #### Merge paired end reads
         echo -e "******** Merging paired-end reads..."
-        pear -j $cores -f $read1 -r $read2 -o $runid > log.txt
+        echo "   R1: ${read1[0]}"
+        echo "   R2: ${read2[0]}"
+        vsearch --fastq_mergepairs "${read1[0]}" -reverse "${read2[0]}" -fastqout all.fastq --threads $cores --log log.merge.txt
+
+        if [ ! -s all.fastq ]; then
+            echo "ERROR: Merge produced no assembled reads. See log.txt." >&2
+            exit 1
+        fi
 
         #### Delete discarded and unassembled paired-end reads
-        rm $runid".discarded.fastq" $runid".unassembled.forward.fastq" $runid".unassembled.reverse.fastq"
-        mv $runid.assembled.fastq all.fastq
+        rm -f $runid".discarded.fastq" $runid".unassembled.forward.fastq" $runid".unassembled.reverse.fastq"
     fi
 fi
 
@@ -731,11 +928,10 @@ fi
 #######################################################################
 
 #### Merge FASTQ files into single file
-if [ "$pe_reads" = "No" ]; then
+if [ "$pe_reads" -eq 0 ]; then
     echo -e "******** Merging FASTQ files..."
 
     # Decompress and concatenate all FASTQ files into single file.
-    ulimit -n 65536
     echo $fastq_file | tr ' ' '\n' | xargs pigz -p $cores -dc > all.fastq2
     
     # Remove any extra text from sequence headers
@@ -747,11 +943,30 @@ fi
 ############## STEP 4: Filter, demultiplex, primer trim ###############
 #######################################################################
 
+fd_want=65536
+fd_hard=$(ulimit -Hn 2>/dev/null || echo "$fd_want")
+[ "$fd_hard" = "unlimited" ] && fd_hard=$fd_want
+[ "$fd_want" -gt "$fd_hard" ] && fd_want=$fd_hard
+ulimit -n "$fd_want" 2>/dev/null
+fd_now=$(ulimit -n)
+umi_pairs=$(awk -F'\t' 'NR>1 && $6!="" && $7!="" {print $6"\t"$7}' "mapping_${runid}.txt" | sort -u | wc -l)
+fd_need=$(( umi_pairs + 16 + 8 * cores ))
+echo "Open-file limit: $fd_now (need about $fd_need: $umi_pairs UMI pairs on $cores cores)"
+if [ "$fd_now" -lt "$fd_need" ]; then
+    echo "ERROR: open-file limit ($fd_now) is too low: $umi_pairs UMI pairs on $cores cores need about $fd_need." >&2
+    echo "       cutadapt would abort partway and silently drop the last samples." >&2
+    echo "       Raise it on the container, e.g. in compose.yaml:" >&2
+    echo "           ulimits:" >&2
+    echo "             nofile: {soft: 65536, hard: 65536}" >&2
+    echo "       or run docker with --ulimit nofile=65536:65536" >&2
+    exit 1
+fi
+
 #### Count raw reads, write to readcounts file.
 seqkit stats -T all.fastq | awk 'NR==2 {print "Raw Reads\t"$4}' > "${runid}_readcounts.txt"
 
 #### Remove reads with low quality scores, and primer dimer forming reads that are outliers on the size distribution.
-if [ "$pe_reads" = "Yes" ]; then 
+if [ "$pe_reads" -eq 1 ]; then 
     vsearch --fastq_filter all.fastq --fastq_maxee $maxee --fastqout all_filt.fastq
 else
     chopper -q $minqual --minlength $min_read_and_primer_length --maxlength $max_read_and_primer_length < all.fastq > all_filt.fastq
@@ -780,9 +995,14 @@ fi
 
 #### Extract forward and reverse primers from mapping file. Function to handle all permutations of primers.
 
-awk -F'\t' -v err1="$error_primer1" -v err2="$error_primer2" -v prim_ov=$primer_overlap_min '
+awk -F'\t' -v err1="$error_primer1" -v err2="$error_primer2" -v prim_ov=$primer_overlap_min -v rcfile="rc_primers_${runid}.txt" '
 function trim(s) { gsub(/^[ \t\r]+/, "", s); gsub(/[ \t\r]+$/, "", s); return s }
+BEGIN {
+    while ((getline line < rcfile) > 0) { split(line, p, "\t"); rcpair[trim(p[1]) SUBSEP trim(p[2])] = 1 }
+    close(rcfile)
+}
 NR>1 && $4!="" && $4!="NA" && $5!="" && $5!="NA" {
+    isrc = ((trim($4) SUBSEP trim($5)) in rcpair) ? 1 : 0
     nf = split($4, F, ",")
     nr = split($5, R, ",")
     for (a = 1; a <= nf; a++) {
@@ -791,24 +1011,31 @@ NR>1 && $4!="" && $4!="NA" && $5!="" && $5!="NA" {
             rs = trim(R[b]); if (rs == "" || rs == "NA") continue
             key = fs SUBSEP rs
             if (!(key in seen)) {
-                seen[key] = 1
+                seen[key] = isrc + 1
                 n++
                 f[n] = fs
                 r[n] = rs
+                m[n] = isrc
                 fnum[n] = int(length(fs) * prim_ov)
                 rnum[n] = int(length(rs) * prim_ov)
+            } else if (seen[key] != isrc + 1) {
+                conflict = conflict "\n    " fs " / " rs
             }
         }
     }
 }
 END {
+    if (conflict != "") {
+        print "ERROR: primer pair(s) listed both with and without \"Reverse Complement\" in Dictionary Update:" conflict > "/dev/stderr"
+        exit 1
+    }
     for (i=1;i<=n;i++)
-        print ">"f[i]"\n"f[i]";min_overlap="fnum[i]";max_error_rate=" err1 > "fwd_primers.fasta"
+        print ">"f[i] (m[i] ? "__rc" : "") "\n"f[i]";min_overlap="fnum[i]";max_error_rate=" err1 > "fwd_primers.fasta"
 
     for (i=1;i<=n;i++)
         print ">"r[i]";min_overlap="rnum[i]";max_error_rate=" err2 "\n"r[i] > "rev_primers.fasta"
 }
-' mapping_"${runid}.txt"
+' mapping_"${runid}.txt" || exit 1
 
 seqtk seq -r -c rev_primers.fasta > rev_primers_rc_raw.fasta
 rm rev_primers.fasta
@@ -836,17 +1063,34 @@ paste fwd_primers.fasta rev_primers_rc.fasta \
     }
 ' > linked_primers.fasta
 
+
+rc_rows=0
+if [ -s "rc_primers_${runid}.txt" ]; then
+    rc_rows=$(awk 'END {print NR}' "rc_primers_${runid}.txt")
+fi
+primer_tag=()
+if [ "$rc_rows" -gt 0 ]; then
+    if [ "$symm" = "symmetrical UMIs" ]; then
+        echo "ERROR: 'Reverse Complement' rows are not supported with symmetrical UMIs." >&2
+        echo "       The single-UMI rescue step rewrites read headers, losing the orientation tag." >&2
+        exit 1
+    fi
+    primer_tag=(--rename "{header} lp={adapter_name}")
+fi
+
 #### Orient sequences by searching the primers. This will make primers, umis, and other non-amplicon seqs lowercase. 
-if [ "$pe_reads" = "Yes" ]; then # No reverse complementing for Illumina
+if [ "$pe_reads" -eq 1 ]; then # No reverse complementing for Illumina
     cutadapt -j $cores \
         -g file:linked_primers.fasta \
         --action=lowercase \
+        "${primer_tag[@]}" \
         -o "${runid}"_g_link_primer.fastq \
         all_filt.fastq 
     else #### Allow reverse complementing for non-Illumina
         cutadapt -j $cores \
         -g file:linked_primers.fasta \
         --action=lowercase \
+        "${primer_tag[@]}" \
         -o "${runid}"_g_link_primer.fastq \
         all_filt.fastq \
         --revcomp    
@@ -863,7 +1107,11 @@ cutadapt -j $cores \
     --action=trim \
     -o {name}.fastq \
     "${runid}"_g_link_primer.fastq \
-    --untrimmed-output "${runid}"_unt.fwd.fastq 
+    --untrimmed-output "${runid}"_unt.fwd.fastq
+if [ $? -ne 0 ]; then
+    echo "ERROR: demultiplexing failed. Results would be incomplete, so stopping here." >&2
+    exit 1
+fi
 
 #### Get read count of demultiplexed reads with linked UMIs
 sum=0
@@ -1010,9 +1258,23 @@ find . -type f -name "*.fastq" -size 0 -delete
 tar -cf - *.fastq | pigz -p $cores > Individual_Raw_Fastq_Files.tar.gz
 
 #### Convert to fasta and rename read headers to shorter versions (if spaces in raw read headers)
-parallel -j $cores '
-    seqkit fq2fa {} | cut -d" " -f1 > {.}.fasta
-' ::: *.fastq
+if [ "$rc_rows" -gt 0 ]; then
+    #### Also reverse-complement reads tagged with a 'Reverse Complement' linked primer. Case retained; strip_lower still removes lowercase UMI/primers.
+    cat > orient_reads.awk <<'AWK'
+BEGIN { from = "ACGTNacgtnRYKMBVDHSWrykmbvdhsw"; to = "TGCANtgcanYRMKVBHDSWyrmkvbhdsw" }
+/^>/  { flip = ($0 ~ / lp=[^ ]*__rc/); sub(/ .*/, ""); print; next }
+flip  { s = ""; for (i = length($0); i > 0; i--) { c = substr($0, i, 1); j = index(from, c); s = s (j ? substr(to, j, 1) : c) }; print s; next }
+      { print }
+AWK
+    parallel -j $cores '
+        seqkit fq2fa {} | awk -f orient_reads.awk > {.}.fasta
+    ' ::: *.fastq
+    rm -f orient_reads.awk
+else
+    parallel -j $cores '
+        seqkit fq2fa {} | cut -d" " -f1 > {.}.fasta
+    ' ::: *.fastq
+fi
 rm *.fastq
 
 #### Generate heat map of demultiplexed reads by well per plate
@@ -1075,7 +1337,7 @@ find . -depth -name '*#*' | while read -r f; do
 done
 
 #### Make output dir
-mkdir ./output
+mkdir -p ./output
 
 #~#~#~#~#~#~#~#~#~#~#~#~#~#~##~#~#~#
 #~#~#~#~ MARKER FOR LOOP #~#~#~#~#~#
@@ -1083,8 +1345,14 @@ mkdir ./output
 
 for marker_dir in */; do
      #### Skip unwanted directory
-    [[ "$marker_dir" == "Individual_Raw_Fasta_Files/" ]] || \
+    [[ "$marker_dir" == "Individual_Raw_Fasta_Files/" ]] && continue
     [[ "$marker_dir" == "output/" ]] && continue
+
+    #### Skip any folder that doesn't have <marker>_<lenght>bp naming convention.
+    [[ "${marker_dir%/}" =~ ^.+_[0-9]+bp$ ]] || {
+        echo "Skipping non-marker folder: ${marker_dir%/}"
+        continue
+    }
 
     echo "=== Processing marker folder: ${marker_dir%/} ==="
     
@@ -1133,10 +1401,53 @@ for marker_dir in */; do
 
     #### Export everything task1 needs
     export -f task1 process_fasta process_otu
-    export cores ampsize minreads componentreads otu_dist1 runid marker pe_reads Ill_abskew Ill_mindiv minsize_unoise
+    export cores ampsize minreads componentreads otu_dist1 runid marker pe_reads Ill_chimera_check Ill_abskew Ill_mindiv minsize_unoise
 
     fasta_files=( *.fasta )
     last_fasta="${fasta_files[-1]}"
+
+    #### Parallel memory optimization: ####
+    #### Autocalculate # of samples that can run at once without running out of RAM. Use defaults if memory is not able to be detected.
+    ####
+
+    jobs=$cores
+    job_mem=0
+    mem_gate=0
+
+    if [ "$mem_budget" -ge 1 ]; then
+        if [ "$mem_per_job" = auto ]; then
+            biggest_mb=$(du -m *.fasta 2>/dev/null | sort -rn | head -1 | cut -f1)
+            [ -z "$biggest_mb" ] && biggest_mb=1
+            job_mem=$(( (biggest_mb * mem_per_job_mult + 1023) / 1024 ))
+        else
+            job_mem=$mem_per_job
+        fi
+        [ "$job_mem" -lt 1 ] && job_mem=1
+
+        if [ "$job_mem" -gt "$mem_budget" ]; then
+            echo "WARNING: one sample may need ${job_mem}GB of RAM, but only ${mem_budget}GB is usable."
+            echo "         MAP will run one sample at a time. Close other programs, or lower --mem_to_leave."
+            job_mem=$mem_budget
+        fi
+
+        jobs=$(( mem_budget / job_mem ))
+        [ "$jobs" -lt 1 ] && jobs=1
+        [ "$jobs" -gt "$cores" ] && jobs=$cores
+
+        # Parallel won't start job while available memory sits below safety net value.
+        mem_gate=$(( mem_budget / 4 ))
+        [ "$mem_gate" -lt 1 ] && mem_gate=1
+        [ "$mem_gate" -gt "$job_mem" ] && mem_gate=$job_mem
+    fi
+
+    if [ "$job_mem" -gt 0 ]; then
+        echo -e "******** Clustering $jobs sample(s) at a time (~${job_mem}GB each, ${mem_budget}GB usable)"
+    else
+        echo -e "******** Clustering $jobs sample(s) at a time"
+    fi
+
+    #### Parallel memory optimization END
+    ####
 
     #### Run task1 in parallel
     parallel -j "$cores" task1 {} ::: *.fasta
@@ -1158,7 +1469,7 @@ for marker_dir in */; do
 
     #### Merge all OTUs into a single master file
     seqkit seq *consensus2.fasta > all_otus_raw_consensus.fasta
-    rm *consensus2.fasta *.chimeras.fasta
+    rm -f *consensus2.fasta *.chimeras.fasta
 
     #### Change OTU sequence names from |reads-n to ;size=n for subsequent size sorting
     sed '/^>/ s/|reads-/;size=/g' all_otus_raw_consensus.fasta > all_otus1_corrected_otus.fasta2
@@ -1191,7 +1502,7 @@ for marker_dir in */; do
 #######################################################################
 
     #### Chimera screen using UCHIME (only if ampsize is >= 200 bp)
-    if [[ "$ampsize" -ge 200 && "$pe_reads" = "No" ]]; then
+    if [[ "$ampsize" -ge 200 && "$pe_reads" -eq 0 ]]; then
         echo -e "******** Performing chimera screen..."
         vsearch --uchime_denovo all_otus_consensus.fasta2 \
         --chimeras all_otus_consensus.chimeras.fasta \
@@ -1414,9 +1725,9 @@ EOF
     fi
 
     #### Tidy up directory and move back to main working directory
-    mkdir -m 777 "1-Results and Report"
-    mkdir -m 777 "2-TSV Versions of Results"
-    mkdir -m 777 "3-Negative Control OTUs"
+    mkdir "1-Results and Report"
+    mkdir "2-TSV Versions of Results"
+    mkdir "3-Negative Control OTUs"
     mv *.xlsx *.html "1-Results and Report"
     mv Metabarcoding_Results*.tsv "2-TSV Versions of Results"
     mv *NegativeControlOTUs.tsv "3-Negative Control OTUs"
@@ -1445,6 +1756,7 @@ echo "Pipeline Complete"
 echo "==============================="
 echo "Machine   : $(hostname)"
 echo "CPU Cores : $cores"
+echo "Memory    : ${mem_budget}GB usable of ${mem_total}GB (${mem_to_leave}GB left free)"
 echo "Run name:   ${runid}"
 echo "Started:    ${start_human}"
 echo "Finished:   ${end_human}"
@@ -1453,6 +1765,9 @@ echo "==============================="
 } >> ./output/pipeline.log
 
 mv Demultiplexing_Results_* Individual_Raw_Fastq_Files* *_readcounts.txt metadata* mapping* runinfo.txt name_map.tsv ./output/
+if [ -f "rc_primers_${runid}.txt" ]; then
+    mv "rc_primers_${runid}.txt" ./output/
+fi
 
 
 

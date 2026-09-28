@@ -15,5 +15,9 @@ services:
       - reflib:/MAP/REFS
       - ${MAP_DATA:-./data}:/data
     command: ["sleep", "infinity"]
+    ulimits: nofile
+      nofile:
+        soft: 65536
+        hard: 65536
 volumes:
   reflib:

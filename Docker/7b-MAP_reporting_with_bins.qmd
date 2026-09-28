@@ -182,23 +182,17 @@ Total_unique_BINs_detected<-metabarcode_data_by_sample%>%
     filter(`BIN Match Status`=='BIN_MATCH')%>%  
     dplyr::summarise(Unique_BINs = n_distinct(`BIN Hit`))
 
-Mean_BINs_per_sample<-metabarcode_comb_data%>%
-  filter(`BIN Match Status`=='BIN_MATCH')%>% 
-  group_by(Sample)%>%
-  dplyr::summarise(bin_counts=n_distinct(`BIN Hit`))%>%
-  dplyr::summarise(Mean_BINs_per_sample=round(mean(bin_counts,na.rm=T),0))
+bin_counts_per_sample <- metabarcode_data_by_sample %>%
+  filter(`BIN Match Status` == 'BIN_MATCH') %>%
+  group_by(Sample) %>%
+  dplyr::summarise(bin_counts = n_distinct(`BIN Hit`), .groups = "drop") %>%
+  # Encode samples without a BIN match as 0, rather than removing them.
+  right_join(tibble(Sample = sample.list), by = "Sample") %>%
+  mutate(bin_counts = tidyr::replace_na(bin_counts, 0))
 
-Max_BINs_per_sample<-metabarcode_comb_data%>%
-  filter(`BIN Match Status`=='BIN_MATCH')%>% 
-  group_by(Sample)%>%
-  dplyr::summarise(bin_counts=n_distinct(`BIN Hit`))%>%
-  dplyr::summarise(Max_BINs_per_sample=max(bin_counts,na.rm=T))
-
-Min_BINs_per_sample<-metabarcode_comb_data%>%
-  filter(`BIN Match Status`=='BIN_MATCH')%>% 
-  group_by(Sample)%>%
-  dplyr::summarise(bin_counts=n_distinct(`BIN Hit`))%>%
-  dplyr::summarise(Min_BINs_per_sample=min(bin_counts,na.rm=T))
+Mean_BINs_per_sample <- round(mean(bin_counts_per_sample$bin_counts), 1)
+Max_BINs_per_sample  <- max(bin_counts_per_sample$bin_counts)
+Min_BINs_per_sample  <- min(bin_counts_per_sample$bin_counts)
 
 collection_period <- metadata %>%
   {

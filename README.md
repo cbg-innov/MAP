@@ -30,7 +30,7 @@ MAP is a fully containerized metabarcoding pipeline that supports both **Illumin
 
 ## How MAP works
 
-1. **Demultiplex & trim** — assign reads to samples; remove primers/UMIs (`cutadapt`, `seqkit`). Illumina reads are merged (`PEAR`).
+1. **Demultiplex & trim** — assign reads to samples; remove primers/UMIs (`cutadapt`, `seqkit`). Illumina reads are merged (`vsearch`).
 2. **Per‑sample clustering** — denoise/cluster each sample into OTUs (`vsearch`); filter by *Min reads per OTU*.
 3. **Run‑wide clustering** — cluster per‑sample OTUs across the run into run‑wide OTUs.
 4. **Sequence correction** (COI) — reference‑frame indel/homopolymer correction to clean coding sequences.
@@ -104,7 +104,7 @@ docker compose -f compose.yaml run --rm map \
 ```
 #### Here, the fastq.gz and parameters files are internal and do not need to be named directly. 
 
-When it finishes, your results are in `./MAP_results/` (Excel + TSV tables, an interactive HTML report, and demultiplexing summaries). See [Outputs](#outputs).
+When it finishes, your results are in `./data/run/output/` (Excel + TSV tables, an interactive HTML report, and demultiplexing summaries). See [Outputs](#outputs).
 
 ---
 
@@ -124,9 +124,26 @@ docker compose -f compose.yaml run --rm map \
   --wd /data/run
 ```
 
+## Running paired-end reads?
+
+Use the same command as for "Run on your own data" (above). The --pe_reads flag must be present while running the command. For the --fastq input, use a name with a wildcard [ * ] that can apply to both files. Make sure only 2 files match the `--fastq` input; otherwise only the first 2 files will be used.
+
+```bash
+# host folder containing: Illumina_R1_001.fastq.gz,  Illumina_R2_001.fastq.gz, parameters.xlsx, and compose.yaml
+cd <PATH>/workdir
+cp <DATA_FASTQ.GZ> <PATH>/workdir/data/
+cp <PARAMETERS.XLSX> <PATH>/workdir/data/
+docker compose -f compose.yaml run --rm map \
+  bash /MAP/SCRIPTS/MAP.sh \
+  --fastq /data/Illumina_R*_001.fastq.gz \
+  --params /data/my_parameters_illumina.xlsx \
+  --wd /data/run \
+  --pe_reads
+```
+
 ## Run with your own reference library
 
-The latest **BOLDdistilled** COI SINTAX reference set is downloaded and unpacked into `/MAP/REFS` **at first run time** and needs an internet connection, and may prolong the MAP demo runtime slightly. The COI correction reference set is provided **at first build time** — no manual download needed. `REFS` is mounted as a named volume (`reflib`) so it persists across runs and can be shared between containers (see [Offline use & reusing the reference library](#offline-use--reusing-the-reference-library) for details on how that persistence works). If you wish to change the reference library, make sure that the parameters.xlsx sheet reflects the new name and copy your vsearch reference file into your working directory. Make sure to also change the `--refs` flag while running via command line to include the file name, minus `.fasta`.
+The latest **BOLDdistilled** COI SINTAX reference set is downloaded and unpacked into `/MAP/REFS` **at first run time** and needs an internet connection, and may prolong the MAP demo runtime slightly. The COI correction reference set is provided **at first build time** — no manual download needed. `REFS` is mounted as a named volume (`reflib`) so it persists across runs and can be shared between containers (see [Offline use & reusing the reference library](#offline-use--reusing-the-reference-library) for details on how that persistence works). If you wish to change the reference library, make sure that the parameters.xlsx sheet reflects the new name and copy your vsearch reference file into your working directory. 
 
 `--refs` points at a folder containing your custom reference library (e.g. `refs`), and must be independent of the `run` directory. We recommend `<PATH>/workdir/data/refs/<reference_fasta>`:
 
@@ -143,8 +160,8 @@ docker compose -f compose.yaml run --rm map \
 
 Results appear in `./data/run/output/`.
 
-- **Illumina paired‑end:** Set *Paired‑end Reads = Yes* in the parameters spreadsheet. Use the common prefix and/or suffix for both files, with '*' where names diverge (R1/R2 handling and merging are driven by the parameters file.)
-- **ONT / long‑read:** set *Paired‑end Reads = No* in the parameters spreadsheet.
+- **Illumina paired‑end:** Include `--pe_reads` flag when running MAP on the command line. Use the common prefix and/or suffix for both files, with '*' where names diverge.
+- **ONT / long‑read:** Do not include `--pe_reads` flag on the command line. MAP's default is individual reads.
 - Start from the bundled spreadsheet as a template (in 'workdir' directory in Github repo) (see [Demo data](#demo-data)).
 
 ---
@@ -161,7 +178,7 @@ docker compose exec map bash    # drop into a shell (the 'map' env auto‑activa
 bash SCRIPTS/MAP.sh        # runs the demo, or add --fastq/--params/--wd
 
 # copy results out to your Desktop:
-docker cp map:/MAP/Metabarcoding/output ~/Desktop/MAP_results
+docker compose cp map:/MAP/Metabarcoding/output ~/Desktop/MAP_results
 
 docker compose down             # stop & remove the container (volume persists)
 ```
@@ -177,7 +194,7 @@ To make your own data visible inside the interactive container, add a bind mount
 
 ## Parameters
 **Note:** UMI map and primers are provided by the user in an Excel (.xlsx) file, using the template provided. 
-The 'UMIs and Primers', 'Bulk Sample Metadata', (except Instructions) must be filled out.
+The 'UMIs and Primers', 'Bulk Sample Metadata', and 'Dictionary Update' tabs must be filled out.
 
 ### The parameters spreadsheet
 Important parameters are set in the `.xlsx` parameters file. Start from the bundled `parameters.xlsx` in the workdir directory on Github to understand formatting. Key fields:
@@ -204,13 +221,14 @@ Important parameters are set in the `.xlsx` parameters file. Start from the bund
 | | **Forward / Reverse Primer Sequence** | This is where you indicate the sequence that corresponds with the primer name you provided  (e.g., AYATRGCHTTYCCHCG) |
 | | **Marker** | Locus name (e.g. `COI-5P`) |
 | | **Reference Library** | SINTAX‑formatted reference DB name (e.g., BOLDistilled_COI_Apr2026). Note: BOLDistilled_COI_ can be used to allow for updated/different libraries to be used without errors. |
-| | **Min / Max Amplicon Length** | Length filter  WITHOUT UMIs or primers or single reads (e.g., ONT) WITH UMIs and primers attached. |
+| | **Min / Max Amplicon Length** | Length filter  WITHOUT UMIs or primers or single reads (e.g., ONT). |
 | | **Target amplicon length** | Expected amplicon length (no primers/UMIs) |
-| | **Paired‑end Reads** | `Yes` (Illumina paired-end) or `No` (ONT/long‑read) |
+| | **Reverse Complement** *(optional)* | `Yes` for a primer pair whose reads come off the sequencer from the reverse-primer end — i.e. plates built with the primer/UMI layout reversed, so this row's "forward" primer is really the reverse primer (e.g. F2 = `GRTGNCCRAARAAYCA`, R2 = `AYATRGCHTTYCCHCG`). Those reads are demultiplexed exactly as sequenced, then reverse-complemented after trimming so every sample is clustered, classified and BIN-matched on the plus strand. Leave blank, or omit the column entirely, for normal pairs. Not supported with symmetrical UMIs. |
 | | **Min reads per OTU** | OTUs below this read count are discarded (e.g., 2) |
 | | **Replicates per sample** | Number of replicates per sample (e.g., 8) |
 | | **Intra-OTU Clustering Threshold** | Threshold for clustering OTUs within samples (i.e., across replicates of the same sample) (e.g., 2.5). Somewhat akin to denoising ASVs. |
 | | **Inter-OTU Clustering Threshold** | Threshold for final OTU clustering across samples (e.g., 2.3). |
+| | **Reverse Complement** | Default is 'No' or [blank] and it is unlikely that you will need to change this. Set 'Yes' only for a primer row with reads that come off the sequencer starting from the reverse-primer end (e.g., plates built with the layout reversed so UMIs can be reused). That row's primer sequences must also be entered swapped (the reverse primer in the Forward Primer Sequence column). |
 
 
 ### Command‑line flags
@@ -218,14 +236,17 @@ Override paths and advanced parameters at run time (defaults shown):
 
 | Flag | Default | Description |
 |---|---|---|
-| `--fastq` | `/MAP/Metabarcoding/PHAUS_1K_RawReads.fastq.gz` | Input reads. You may use a wildcard to refer to multiple files, but assign a similar prefix (e.g., `PHAUS_Illumina_*.fastq.gz`). |
+| `--fastq` | `/MAP/Metabarcoding/PHAUS_1K_RawReads.fastq.gz` | Input reads: one or more files. A wildcard works with or without quotes (e.g., `--fastq /data/PHAUS_Illumina_*.fastq.gz`), as does listing files explicitly; give related files a similar prefix. Paired-end R1/R2 files must follow the `_R1_`/`_R2_` or `_1.fastq`/`_2.fastq` naming convention. File paths cannot contain spaces. |
 | `--params` | `/MAP/Metabarcoding/parameters.xlsx` | Parameters spreadsheet |
 | `--refs` | `/MAP/REFS` | Reference library directory |
 | `--wd` | `/MAP/Metabarcoding` | Working directory (outputs go to `<wd>/output`) |
+| `--pe_reads` | [off] | Include flag if using paired-end reads. Older parameters files with a `Paired-End Reads` column still work if column agrees with flag | 
 | `--scripts` | `/MAP/SCRIPTS` | Pipeline scripts directory |
 | `--sintax_cutoff` | `0.6` | SINTAX confidence cutoff (0–1) |
-| `--componentreads` | `0` | Save per‑OTU component reads (`1` yes / `0` no) |
+| `--componentreads` | [off] | Save per‑OTU component reads. Default is off; component reads not saved. |
 | `--cores_to_leave` | `2` | How many cores to leave free. MAP will use the rest. |
+| `--mem_to_leave` | `2` | How many GB left free inside the container. MAP will use the rest. |
+| `--mem_per_job` | `auto` | This may be edited to manually change the max GB of memory used per job |
 | `--ref_seq_corr` | `/MAP/REFS/reference_seqs_327K.fasta` | File used for sequence correction |
 | `--umi_overlap_min` | `0.75` | Multiplier applied to UMI lengths during demultiplexing. We recommend 0.75 for UMIs ≥12 nucleotides, and 1.0 for UMIs <12 nucleotides. |
 | `--primer_overlap_min` | `0.75` | Multiplier applied to primer lengths. We recommend 0.75. |
@@ -237,8 +258,9 @@ Override paths and advanced parameters at run time (defaults shown):
 | `--minqual` | `10` | Min quality score permitted with Chopper (ONT/long‑read). We recommend 10 for long‑read sequences with lower overall predicted quality for better retention; a score closer to 20 is likely more useful for higher‑quality sequences (e.g., HiFi PacBio). |
 | `--min_read_and_primer_length` | `100` | Min length of sequence+primers kept by Chopper. Kept loose to account for variable markers with variable polymorphic lengths. |
 | `--max_read_and_primer_length` | `1000` | Max length of sequence+primers kept by Chopper. Kept loose to account for variable markers with variable polymorphic lengths. |
-| `--Ill_abskew` | `10` | (Paired‑end/Illumina only) VSEARCH `uchime_denovo` abskew parameter |
-| `--Ill_mindiv` | `0.0005` | (Paired‑end/Illumina only) VSEARCH `uchime_denovo` mindiv parameter |
+| `--no_Ill_chimera_check` | [off] | (Paired‑end/Illumina only) Skips the per‑sample `uchime_denovo` chimera screen, which otherwise runs by default. Dereplication still runs either way, as `cluster_unoise` requires it. |
+| `--Ill_abskew` | `2` | (Paired‑end/Illumina only) VSEARCH `uchime_denovo` abskew parameter |
+| `--Ill_mindiv` | `0.8` | (Paired‑end/Illumina only) VSEARCH `uchime_denovo` mindiv parameter |
 | `--LR_abskew` | `10` | (Long‑read/ONT only) VSEARCH `uchime_denovo` abskew parameter |
 | `--LR_mindiv` | `0.0005` | (Long‑read/ONT only) VSEARCH `uchime_denovo` mindiv parameter |
 | `--minsize_unoise` | `2` | Min cluster size (within samples) for paired‑end reads using VSEARCH `cluster_unoise` |
@@ -250,6 +272,7 @@ Override paths and advanced parameters at run time (defaults shown):
 | `--BIN_percent_ID` | `0.85` | We recommend 0.85 for short‑read data. Threshold to keep matches to BINs in the final database, regardless of 'formal' BIN assignment. Matches below this threshold are labeled "NO MATCH" in the final data. |
 | `--BIN_maxaccepts` | `3` | Parameter fed to VSEARCH's `usearch_global` command. |
 | `--BIN_maxhits` | `3` | Parameter fed to VSEARCH's `usearch_global` command. |
+| `--overwrite` | [off] | Include flag if you want to replace the contents of the `output/` directory | 
 
 > **Tip (ONT):** raising **Min reads per OTU** is an effective lever for trimming low‑read long‑read error variants and tightening per‑sample richness.
 
@@ -257,14 +280,14 @@ Override paths and advanced parameters at run time (defaults shown):
 
 ## Outputs
 
-All results are written to `<working_dir>/output/` (e.g. `./MAP_results/` or `./my_run/output/`):
+All results are written to `<working_dir>/output/<marker>_<len>bp/`:
 
 - **`Metabarcoding Results - <run>.xlsx`** — main results workbook (*By Sample*, *By Replicate*, *Sample Metadata* sheets).
 - **`2-TSV Versions of Results/`** — the same tables as plain TSV (`…_BySample.tsv`, `…_ByReplicate.tsv`).
 - **`1-Results and Report/MAP Report - <run>.html`** — interactive report (richness, maps, treemaps, BIN matches).
 - **`Demultiplexing_Results_<run>.pdf`** — per‑sample/plate read‑count summaries.
 - **`<run>_<marker>_<len>bp_NegativeControlOTUs.tsv`** — OTUs detected in negative controls.
-- **OTU component reads** (zipped) when `--componentreads 1`.
+- **OTU component reads** (zipped) when `--componentreads` is passed.
 
 For COI markers ≥ ~300 bp, results include **BOLD BIN** matches (BIN hit, % identity, BIN taxonomy).
 
@@ -281,7 +304,7 @@ cd Docker
 docker build -t map .
 ```
 
-This installs the full environment via `micromamba`, lays out `SCRIPTS/`, `Metabarcoding/`, and `REFS/`, installs Quarto and `iNEXT`, and downloads + unpacks teh reference library used for sequence correction of COI.
+This installs the full environment via `micromamba`, lays out `SCRIPTS/`, `Metabarcoding/`, and `REFS/`, installs Quarto and `iNEXT`, and unpacks the reference library used for sequence correction of COI.
 
 Run a locally‑built image by replacing `ghcr.io/cbg-innov/map:latest` with `map:latest` in any command above.
 
@@ -317,10 +340,9 @@ docker volume ls | grep map_reflib        # confirm the reflib volume exists
 
 ---
 
-
 ## Troubleshooting
 
-- **No output on the host?** Make sure you mounted a volume to the output location (`-v "$(pwd)/MAP_results:/MAP/Metabarcoding/output"`), or use `--wd /data` with `-v "$(pwd)/my_run:/data"`. Alternatively retrieve results with `docker cp map:/MAP/Metabarcoding/output ./MAP_results`.
+- **No output on the host?** Set working directory `--wd` to the mounted folder, e.g., `--wd /data/run`, which will write results to `./data/run/output/`on your machine. Without `--wd`, MAP writes to `/MAP/Metabarcoding` inside the container. If you ran MAP in a long-running container (`docker compose up -d`), you can copy results out using: `docker compose cp map:/MAP/Metabarcoding/output ./MAP_results`
 - **Disk space.** Large/deep runs (especially ONT) can generate many intermediate files; ensure adequate free disk on the Docker host.
 - **`map` environment not active.** Use `bash -lc "…"`, or run inside `micromamba run -n map bash -c "…"`.
 

@@ -25,7 +25,7 @@ library(readxl)
 library(stringr)
 
 # Import master tables
-df <- read.table("df.txt", sep = "\t", header = T)
+df <- read.table("df.txt", sep = "\t", header = T, quote = "")
 
 #####################################################################################
 ######################## GENERATE REPLICATE TABLE ###################################
@@ -79,26 +79,14 @@ df <- df[,c("Sample", "Replicate", "NewName", "Reads", "Sample_OTU_Name", "Sampl
             "Run_OTU_Sequence", "Tax")]
 names(df)[c(3,9)] <- c("OTU_ID", "Run_OTU_Consensus_Sequence")
 
-# Expand taxonomy into individual columns
-nmax <- max(lengths(strsplit(df$Tax, ",")))
-rank_names <- c("Kingdom", "Phylum", "Class", "Order",
-                "Family", "Genus", "Species")
-df <- df %>%
-  separate(
-    col   = Tax,
-    into  = rank_names,
-    sep   = ",",
-    fill  = "right"
-  )
+# Expand taxonomy into individual columns (matched by its SINTAX prefix, not position)
 
-# Remove sintax rank indicators from data
-df$Kingdom <- gsub("k:", "", df$Kingdom)
-df$Phylum <- gsub("p:", "", df$Phylum)
-df$Class <- gsub("c:", "", df$Class)
-df$Order <- gsub("o:", "", df$Order)
-df$Family <- gsub("f:", "", df$Family)
-df$Genus <- gsub("g:", "", df$Genus)
-df$Species <- gsub("s:", "", df$Species)
+rank_prefix <- c(Kingdom = "[kd]", Phylum = "p", Class = "c", Order = "o",
+                 Family = "f", Genus = "g", Species = "s")
+for (rank in names(rank_prefix)) {
+  df[[rank]] <- str_match(df$Tax, paste0("(?:^|,)", rank_prefix[[rank]], ":([^,]*)"))[, 2]
+}
+df$Tax <- NULL
 
 # Backup table for later
 df.bkp <- df
@@ -141,7 +129,7 @@ df.summary <- df.summary[order(df.summary$Sample, -df.summary$Reads),]
 ########################### IMPORT METADATA TABLE ###################################
 #####################################################################################
 # Add sample metadata to results file
-metadata <- read.table(sprintf("../metadata_%s.txt", runid), header = T, sep = "\t", comment.char = "", fill = T, check.names = F)
+metadata <- read.table(sprintf("../metadata_%s.txt", runid), header = T, sep = "\t", comment.char = "", quote = "", fill = T, check.names = F)
 names(metadata) <- c("Sample", "Collection Site", "Latitude", "Longitude", "Collection Start Date", "Collection End Date")
 
 #####################################################################################
