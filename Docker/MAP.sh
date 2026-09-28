@@ -708,11 +708,7 @@ for _, d in dic.iterrows():
     lut[(str(d["Forward Primer Name"]).strip(),
          str(d["Reverse Primer Name"]).strip())] = d
 
-#  rc_primers_<run>.txt : optional 'Reverse Complement' column in 'Dictionary Update'.
-#  Flag the rows whose reads come off the sequencer on the minus strand (e.g. plates
-#  built with the primer layout reversed). Those reads are demultiplexed as-is, then
-#  reverse-complemented after trimming so every sample reaches clustering, sintax and
-#  BIN matching on the plus strand. Column absent or blank = normal behaviour.
+
 RC_COL = "Reverse Complement"
 RC_YES = {"yes", "y", "1", "true", "-", "minus", "reverse", "rc"}
 rc_pairs = []
@@ -917,10 +913,6 @@ fi
 ############## STEP 4: Filter, demultiplex, primer trim ###############
 #######################################################################
 
-#### Demultiplexing opens one output file per UMI pair, so a run with many
-#### plates needs far more descriptors than the usual 1024 default. Without
-#### this, cutadapt aborts partway and the LAST wells in the mapping file are
-#### silently left empty.
 fd_want=65536
 fd_hard=$(ulimit -Hn 2>/dev/null || echo "$fd_want")
 [ "$fd_hard" = "unlimited" ] && fd_hard=$fd_want
@@ -928,9 +920,10 @@ fd_hard=$(ulimit -Hn 2>/dev/null || echo "$fd_want")
 ulimit -n "$fd_want" 2>/dev/null
 fd_now=$(ulimit -n)
 umi_pairs=$(awk -F'\t' 'NR>1 && $6!="" && $7!="" {print $6"\t"$7}' "mapping_${runid}.txt" | sort -u | wc -l)
-echo "Open-file limit: $fd_now (need roughly $umi_pairs for demultiplexing)"
-if [ "$fd_now" -lt $(( umi_pairs + 64 )) ]; then
-    echo "ERROR: open-file limit ($fd_now) is too low for $umi_pairs UMI pairs." >&2
+fd_need=$(( umi_pairs + 16 + 8 * cores ))
+echo "Open-file limit: $fd_now (need about $fd_need: $umi_pairs UMI pairs on $cores cores)"
+if [ "$fd_now" -lt "$fd_need" ]; then
+    echo "ERROR: open-file limit ($fd_now) is too low: $umi_pairs UMI pairs on $cores cores need about $fd_need." >&2
     echo "       cutadapt would abort partway and silently drop the last samples." >&2
     echo "       Raise it on the container, e.g. in compose.yaml:" >&2
     echo "           ulimits:" >&2
@@ -1040,9 +1033,7 @@ paste fwd_primers.fasta rev_primers_rc.fasta \
     }
 ' > linked_primers.fasta
 
-#### 'Reverse Complement' rows: tag every read with the linked primer it matched, so
-#### minus-strand reads can be flipped AFTER demultiplexing. Flipping any earlier
-#### would move reads between samples whose UMIs are the same oligos swapped.
+
 rc_rows=0
 if [ -s "rc_primers_${runid}.txt" ]; then
     rc_rows=$(awk 'END {print NR}' "rc_primers_${runid}.txt")
@@ -1238,8 +1229,7 @@ tar -cf - *.fastq | pigz -p $cores > Individual_Raw_Fastq_Files.tar.gz
 
 #### Convert to fasta and rename read headers to shorter versions (if spaces in raw read headers)
 if [ "$rc_rows" -gt 0 ]; then
-    #### Also reverse-complement reads tagged with a 'Reverse Complement' linked primer.
-    #### Case is kept, so strip_lower still removes the lowercase UMI/primer flanks.
+    #### Also reverse-complement reads tagged with a 'Reverse Complement' linked primer. Case retained; strip_lower still removes lowercase UMI/primers.
     cat > orient_reads.awk <<'AWK'
 BEGIN { from = "ACGTNacgtnRYKMBVDHSWrykmbvdhsw"; to = "TGCANtgcanYRMKVBHDSWyrmkvbhdsw" }
 /^>/  { flip = ($0 ~ / lp=[^ ]*__rc/); sub(/ .*/, ""); print; next }
