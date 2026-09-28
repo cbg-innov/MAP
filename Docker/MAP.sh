@@ -4,7 +4,7 @@ clear
 START_TIME=$(date +%s)
 start_human=$(date "+%Y-%m-%d %H:%M:%S")
 echo -e '\n\n\n########## STARTING MAP ANALYSIS ##########'
-# v 1.0
+# v 2.0.0
 
 
 # REQUIREMENTS:
@@ -114,8 +114,6 @@ mem_per_job_mult=6 # Safety multiplier applied to the largest sample file when e
 while [[ $# -gt 0 ]]; do
  case "$1" in 
     --fastq)
-        #### Accept any number of files, so an unquoted glob works (--fastq /data/*.fastq.gz).
-        #### A quoted glob ("/data/*.fastq.gz") still works too; it is expanded below.
         shift
         fastq_file=""
         while [[ $# -gt 0 && "$1" != --* ]]; do
@@ -291,6 +289,16 @@ for f in $fastq_file; do
         exit 1
     fi
 done
+
+#### Issue warning if fastq files containing 'R1' and 'R2' are detected, but -pe_reads is not turned on.
+if [ "$pe_reads" -eq 0 ]; then
+    n_r1=$(printf '%s\n' $fastq_file | grep -cE '_R1[_.]|_1\.fastq')
+    n_r2=$(printf '%s\n' $fastq_file | grep -cE '_R2[_.]|_2\.fastq')
+    if [ "$n_r1" -gt 0 ] && [ "$n_r2" -gt 0 ]; then
+        echo "WARNING: the --fastq files look like paired-end R1/R2 mates, but --pe_reads was not given." >&2
+        echo "         They will be analysed as single-end (long-read) data. Add --pe_reads if they are Illumina pairs." >&2
+    fi
+fi
 params_file="$(make_abs "$params_file")"
 reference_lib_dir="$(make_abs "$reference_lib_dir")"
 working_dir="$(make_abs "$working_dir")"
@@ -681,6 +689,24 @@ up = up[up["Sample"].notna() & (up["Sample"].astype(str).str.strip() != "")]
 # 'Dictionary Update': primer lookup + run-level params 
 dic = pd.read_excel(PF, sheet_name="Dictionary Update")
 dic.columns = [str(c).strip() for c in dic.columns]
+
+# Older parameters files record paired-end in a 'Paired-End Reads' column; it is now the
+# --pe_reads flag. If such a column is present it must agree with the flag.
+PE_FLAG = int("${pe_reads}")
+if "Paired-End Reads" in dic.columns:
+    pe_vals = {str(v).strip().lower() for v in dic["Paired-End Reads"] if str(cell(v)).strip()}
+    pe_yes = pe_vals & {"yes", "y", "true", "1"}
+    pe_no = pe_vals & {"no", "n", "false", "0"}
+    if pe_yes and pe_no:
+        sys.exit("ERROR: 'Paired-End Reads' in 'Dictionary Update' mixes Yes and No. "
+                 "A run is either paired-end or not; fix the column, or delete it and use --pe_reads.")
+    if pe_yes and not PE_FLAG:
+        sys.exit("ERROR: this parameters file says 'Paired-End Reads: Yes', but --pe_reads was not given.\n"
+                 "       Paired-end is now set with the --pe_reads flag. Add --pe_reads to your command\n"
+                 "       (you can then delete the 'Paired-End Reads' column).")
+    if pe_no and PE_FLAG:
+        sys.exit("ERROR: --pe_reads was given, but this parameters file says 'Paired-End Reads: No'.\n"
+                 "       Remove --pe_reads for long-read data, or fix/delete the 'Paired-End Reads' column.")
 if dic.shape[0] == 0:
     sys.exit("ERROR: 'Dictionary Update' tab is empty.")
 
@@ -761,6 +787,10 @@ meta_sheet = "Bulk Sample Metadata" if "Bulk Sample Metadata" in xls.sheet_names
 metadata = pd.read_excel(PF, sheet_name=meta_sheet)
 metadata.to_csv(f"metadata_{run_id}.txt", sep="\t", header=True, index=False)
 XL1
+if [ $? -ne 0 ]; then
+    echo "ERROR: stopping — the parameters file could not be read or was rejected (see the message above)." >&2
+    exit 1
+fi
 
 #### Remove any Windows carriage returns from mapping file
 sed -i.bak 's/\r$//' mapping*.txt && rm -f mapping*.txt.bak
