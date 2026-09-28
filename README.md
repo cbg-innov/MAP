@@ -240,7 +240,7 @@ Override paths and advanced parameters at run time (defaults shown):
 | `--params` | `/MAP/Metabarcoding/parameters.xlsx` | Parameters spreadsheet |
 | `--refs` | `/MAP/REFS` | Reference library directory |
 | `--wd` | `/MAP/Metabarcoding` | Working directory (outputs go to `<wd>/output`) |
-| `--pe_reads` | [off] | Include flag if using paired-end reads | 
+| `--pe_reads` | [off] | Include flag if using paired-end reads. Older parameters files with a `Paired-End Reads` column still work if column agrees with flag | 
 | `--scripts` | `/MAP/SCRIPTS` | Pipeline scripts directory |
 | `--sintax_cutoff` | `0.6` | SINTAX confidence cutoff (0–1) |
 | `--componentreads` | [off] | Save per‑OTU component reads. Default is off; component reads not saved. |
