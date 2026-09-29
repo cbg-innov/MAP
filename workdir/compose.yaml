@@ -15,7 +15,7 @@ services:
       - reflib:/MAP/REFS
       - ${MAP_DATA:-./data}:/data
     command: ["sleep", "infinity"]
-    ulimits: nofile
+    ulimits:
       nofile:
         soft: 65536
         hard: 65536

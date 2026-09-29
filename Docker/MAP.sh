@@ -4,7 +4,7 @@ clear
 START_TIME=$(date +%s)
 start_human=$(date "+%Y-%m-%d %H:%M:%S")
 echo -e '\n\n\n########## STARTING MAP ANALYSIS ##########'
-# v 2.0.0
+# v 1.1.0
 
 
 # REQUIREMENTS:
