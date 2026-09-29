@@ -65,12 +65,12 @@ docker run hello-world                      # verify, no sudo
 https://www.docker.com/products/docker-desktop/
 ---
 
-## Quick start (run the included demo after Docker setup)
+## To Install MAP: Quick start (run the included demo after Docker setup)
 - **Runs the demo out of the box. Highly recommended.** With no arguments, MAP runs the bundled `PHAUS_1K` test dataset, so you can confirm the whole pipeline works before touching your own data.
 
 **Note:** The instructions are meant to be run from the '<PATH>/workdir' directory, but can be run from any directory with the fastq.gz, parameters.xlsx, and compose.yaml files. These 3 files are required for MAP to run and they should be set up with the same structure as in the provided `workdir` directory.
 
-**Pull the image:**
+**Pull the image:** This installs MAP.
 ```bash
 docker pull ghcr.io/cbg-innov/map:latest
 ```
