@@ -59,7 +59,7 @@ df <- df[df$Sample %in% sample.list,]
 
 # Rename column headers
 names(df) <- c("Sample", "Replicate", "Sample_OTU_Name", "Reads", "Sample_OTU_Sequence", 
-               "Run_OTU_Name", "Run_OTU_Sequence", "Tax")
+               "Run_OTU_Name", "Run_OTU_Sequence", "Tax", "Tax_conf")
 
 # Add sequence length and ambiguous base count to tables
 df$Sample_OTU_Length <- nchar(df$Sample_OTU_Sequence)
@@ -76,7 +76,7 @@ temp.df <- data.frame(
 )
 df <- merge(df, temp.df, by.x = "Run_OTU_Name", by.y = "OldName", all.x = TRUE)
 df <- df[,c("Sample", "Replicate", "NewName", "Reads", "Sample_OTU_Name", "Sample_OTU_Length", "Sample_OTU_Ns", "Sample_OTU_Sequence",
-            "Run_OTU_Sequence", "Tax")]
+            "Run_OTU_Sequence", "Tax", "Tax_conf")]
 names(df)[c(3,9)] <- c("OTU_ID", "Run_OTU_Consensus_Sequence")
 
 # Expand taxonomy into individual columns (matched by its SINTAX prefix, not position)
@@ -88,12 +88,29 @@ for (rank in names(rank_prefix)) {
 }
 df$Tax <- NULL
 
+# SINTAX confidence (0-1) for its best candidate at each rank. 
+conf_cols <- paste0(names(rank_prefix), "_Confidence")
+for (rank in names(rank_prefix)) {
+  df[[paste0(rank, "_Confidence")]] <- as.numeric(
+    str_match(df$Tax_conf, paste0("(?:^|,)", rank_prefix[[rank]], ":[^,]*\\(([0-9.]+)\\)"))[, 2])
+}
+df$Tax_conf <- NULL
+
+# Blank out NAs in the text columns only; confidences stay numeric so Excel can sort/filter them
+blank_na <- function(x, skip) {
+  for (col in setdiff(names(x), skip)) {
+    v <- x[[col]]
+    if (anyNA(v)) { v[is.na(v)] <- ""; x[[col]] <- v }
+  }
+  x
+}
+
 # Backup table for later
 df.bkp <- df
 
 # Sort and format final table
 df <- df[order(df$Sample, df$Replicate, -df$Reads),]
-df[is.na(df)] <- ""
+df <- blank_na(df, conf_cols)
 
 #####################################################################################
 ########################### GENERATE SAMPLE TABLE ###################################
@@ -116,11 +133,12 @@ df.summary <- df %>%
     Family = first (Family),
     Genus = first (Genus),
     Species = first (Species),
+    across(all_of(conf_cols), first),
     .groups = "drop"
   )
 
 # Replace all NA values with blanks
-df.summary[is.na(df.summary)] <- ""
+df.summary <- blank_na(df.summary, conf_cols)
 
 # Sort by sample and read count
 df.summary <- df.summary[order(df.summary$Sample, -df.summary$Reads),]
@@ -203,6 +221,9 @@ setColWidths(wb,"By Sample",cols = 11,widths = "20") #o
 setColWidths(wb,"By Sample",cols = 12,widths = "22") #f
 setColWidths(wb,"By Sample",cols = 13,widths = "22") #g
 setColWidths(wb,"By Sample",cols = 14,widths = "25") #s
+conf.style <- createStyle(halign = "center", numFmt = "0.00")
+addStyle(wb, "By Sample", cols = match(conf_cols, names(df.summary)), rows = 1:nrow(df.summary)+1, style = conf.style, gridExpand = TRUE)
+setColWidths(wb, "By Sample", cols = match(conf_cols, names(df.summary)), widths = 22)
 
 # Add "By Replicate" sheet
 addWorksheet(wb, "By Replicate", gridLines = TRUE)
@@ -224,6 +245,8 @@ setColWidths(wb,"By Replicate",cols = 12,widths = "20") #o
 setColWidths(wb,"By Replicate",cols = 13,widths = "22") #f
 setColWidths(wb,"By Replicate",cols = 14,widths = "22") #g
 setColWidths(wb,"By Replicate",cols = 15,widths = "25") #s
+addStyle(wb, "By Replicate", cols = match(conf_cols, names(df)), rows = 1:nrow(df)+1, style = conf.style, gridExpand = TRUE)
+setColWidths(wb, "By Replicate", cols = match(conf_cols, names(df)), widths = 22)
 
 # Add "Sample Metadata" sheet
 addWorksheet(wb, "Sample Metadata", gridLines = TRUE)

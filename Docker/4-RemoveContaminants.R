@@ -35,13 +35,14 @@ sintax.input <- read.delim(
   col.names    = paste0("V", 1:4),
   colClasses   = "character"
 )
-names(sintax.input) <- c("Query","Tax","strand","Tax_final")
+# V2 = every rank with its confidence
+names(sintax.input) <- c("Query","Tax_conf","strand","Tax_final")
 
 # import master OTU table
 df_raw <- read.table("all_otus_run_wide_OTU_info.txt", header = TRUE, sep = "\t", quote = "")
 
 # add sintax results to master OTU table
-df <- merge(df_raw, sintax.input[,c(1,4)], by.x = "Run_Wide_OTU_Name", by.y = "Query", all.x = TRUE)
+df <- merge(df_raw, sintax.input[,c(1,4,2)], by.x = "Run_Wide_OTU_Name", by.y = "Query", all.x = TRUE)
 # ----------------------------
 # Negative controls: read from the 'Negative Control' column of the parameters
 # file (NOT from the sample name). A well is a negative control if that column
@@ -226,10 +227,10 @@ df_with_action$Contam_Check[is.na(df_with_action$Contam_Check)] <- "NA"
 df_with_action$Replicate_Check[is.na(df_with_action$Replicate_Check)] <- "NA"
 
 #Create table for retained sequences (negative-control wells are excluded here)
-df_retain <- df_with_action[which(df_with_action$Action=="retain" & df_with_action$Well_Type!="neg"),c(2:6,1,8:9)]
+df_retain <- df_with_action[which(df_with_action$Action=="retain" & df_with_action$Well_Type!="neg"),c(2:6,1,8:10)]
 
 #Create table for negative controls
-df_neg <- df_with_action[which(df_with_action$Well_Type=="neg"),c(2:6,1,8:9)]
+df_neg <- df_with_action[which(df_with_action$Well_Type=="neg"),c(2:6,1,8:10)]
 
 #Create retained sequences fasta for CHIMERA CHECK
 fasta <- DNAStringSet(df_retain$Run_Wide_OTU_Consensus_Sequence)
