@@ -1,0 +1,41 @@
+<macros>
+    <!--
+      TOOL_VERSION is the MAP release (git tag vX.Y.Z, GHCR image X.Y.Z) and also
+      selects the container below. Bump VERSION_SUFFIX for wrapper-only changes.
+      Release by tagging vX.Y.Z (TOOL_VERSION, suffix 0) or vX.Y.Z+galaxyN
+      (suffix N); the release job checks the tag matches these two tokens.
+
+      1.1.1 is the first MAP release whose reference check accepts any library
+      named in the parameters file (1.1.0 only recognised BOLDistilled files and
+      would download BOLDistilled on every Galaxy job).
+    -->
+    <token name="@TOOL_VERSION@">1.1.1</token>
+    <token name="@VERSION_SUFFIX@">0</token>
+    <token name="@PROFILE@">24.0</token>
+
+    <xml name="requirements">
+        <requirements>
+            <!--
+              MAP ships as a single self-contained image on GHCR that bundles every
+              R/Python/CLI dependency and the COI sequence-correction reference.
+              The SINTAX reference libraries are NOT in the image; they come from the
+              user's history (see the 'refs' input). Pinned to the release version
+              rather than the mutable :latest tag, so each Tool Shed revision is
+              reproducible.
+            -->
+            <container type="docker">ghcr.io/cbg-innov/map:@TOOL_VERSION@</container>
+        </requirements>
+    </xml>
+
+    <xml name="citations">
+        <citations>
+            <!-- Replace with the MAP paper DOI once it is published. -->
+            <citation type="bibtex">@misc{map_github,
+  title = {MAP: Metabarcoding Analysis Pipeline},
+  author = {Bard, Nick and {Centre for Biodiversity Genomics}},
+  howpublished = {\url{https://github.com/cbg-innov/MAP}},
+  year = {2026}
+}</citation>
+        </citations>
+    </xml>
+</macros>

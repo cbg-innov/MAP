@@ -1,0 +1,19 @@
+name: map
+owner: cbg-innov
+description: MAP — containerized metabarcoding pipeline (sequencer output to OTU tables)
+long_description: |
+  MAP (Metabarcoding Analysis Pipeline) turns raw, non-demultiplexed metabarcoding reads
+  and a parameters spreadsheet into per-sample OTU tables with SINTAX taxonomy and per-rank
+  confidence, contaminant filtering against negative controls, and (for COI-5P) BOLD BIN
+  matches. It supports long reads (e.g. Oxford Nanopore) and paired-end short reads
+  (e.g. Illumina). All dependencies ship inside a single Docker image on GHCR; SINTAX
+  reference libraries are supplied from the Galaxy history.
+homepage_url: https://github.com/cbg-innov/MAP
+remote_repository_url: https://github.com/cbg-innov/MAP/tree/main/galaxy/map
+type: unrestricted
+categories:
+  - Metagenomics
+  - Sequence Analysis
+auto_tool_repositories:
+  name_template: "{{ tool_id }}"
+  description_template: "{{ tool_name }} — Metabarcoding Analysis Pipeline"

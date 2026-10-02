@@ -1,0 +1,267 @@
+<tool id="map" name="MAP" version="@TOOL_VERSION@+galaxy@VERSION_SUFFIX@" profile="@PROFILE@">
+    <description>Metabarcoding Analysis Pipeline: from sequencer output to OTU tables</description>
+    <macros>
+        <import>macros.xml</import>
+    </macros>
+    <expand macro="requirements"/>
+    <!--
+      MAP.sh takes its inputs as flags (- -fastq, - -params, - -refs, - -wd) and writes
+      everything under <wd>/output. Most output file names contain the run name from
+      the parameters file and the marker, so this wrapper:
+        (1) stages the Galaxy datasets in the job directory under fixed, space-free
+            names (MAP paths cannot contain spaces; paired-end files must be named
+            _R1_/_R2_),
+        (2) stages the reference FASTA datasets in a writable folder passed as - -refs
+            (MAP writes a .vsearch index there for BIN matching),
+        (3) translates $GALAXY_SLOTS into MAP's - -cores_to_leave, and
+        (4) copies the run-level outputs to fixed names and discovers the per-marker
+            results by pattern.
+    -->
+    <command detect_errors="exit_code"><![CDATA[
+#import re
+mkdir -p map_wd map_refs &&
+
+## ---- respect Galaxy's core allocation ----
+## MAP has no "use N cores" flag, only "leave N free".
+cores_total=\$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1) ;
+leave=\$(( cores_total - \${GALAXY_SLOTS:-1} )) ;
+if [ "\$leave" -lt 0 ] ; then leave=0 ; fi ;
+
+ln -s '$parameters' parameters.xlsx &&
+
+## ---- reference libraries: MAP looks for <Reference Library>*.fasta ----
+#for $ref in $refs
+    #set $ref_name = re.sub(r'[^A-Za-z0-9._-]', '_', str($ref.element_identifier))
+    #set $ref_name = re.sub(r'\.(fasta|fas|fa|fna)$', '', $ref_name) + '.fasta'
+    ln -s '$ref' 'map_refs/$ref_name' &&
+#end for
+
+## ---- reads ----
+#if $mode.type == 'pe'
+    ln -s '$mode.reads_r1' reads_R1_001.fastq.gz &&
+    ln -s '$mode.reads_r2' reads_R2_001.fastq.gz &&
+#else
+    #for $i, $r in enumerate($mode.reads)
+        ln -s '$r' 'reads_${i}.fastq.gz' &&
+    #end for
+#end if
+
+micromamba run -n map bash /MAP/SCRIPTS/MAP.sh
+#if $mode.type == 'pe'
+    --fastq reads_R1_001.fastq.gz reads_R2_001.fastq.gz
+    --pe_reads
+    #if not $mode.ill_chimera_check
+        --no_Ill_chimera_check
+    #end if
+#else
+    --fastq #for $i, $r in enumerate($mode.reads)# 'reads_${i}.fastq.gz' #end for#
+#end if
+    --params parameters.xlsx
+    --refs "\$(pwd)/map_refs"
+    --wd "\$(pwd)/map_wd"
+    --cores_to_leave "\$leave"
+    --overwrite
+    --sintax_cutoff '$sintax_cutoff'
+#if str($advanced.customize) == 'yes'
+    --umi_overlap_min '$advanced.umi_overlap_min'
+    --primer_overlap_min '$advanced.primer_overlap_min'
+    --error_umi1 '$advanced.error_umi1'
+    --error_umi2 '$advanced.error_umi2'
+    --error_primer1 '$advanced.error_primer1'
+    --error_primer2 '$advanced.error_primer2'
+    --min_read_and_primer_length '$advanced.min_read_and_primer_length'
+    --max_read_and_primer_length '$advanced.max_read_and_primer_length'
+    --minqual '$advanced.minqual'
+    --maxee '$advanced.maxee'
+    --Ill_abskew '$advanced.Ill_abskew'
+    --Ill_mindiv '$advanced.Ill_mindiv'
+    --LR_abskew '$advanced.LR_abskew'
+    --LR_mindiv '$advanced.LR_mindiv'
+    --minsize_unoise '$advanced.minsize_unoise'
+    --min_rep_prop '$advanced.min_rep_prop'
+    --high_dens_prop '$advanced.high_dens_prop'
+    --alpha_quantile '$advanced.alpha_quantile'
+    --k_multiplier '$advanced.k_multiplier'
+    --BIN_percent_ID '$advanced.BIN_percent_ID'
+    --BIN_maxaccepts '$advanced.BIN_maxaccepts'
+    --BIN_maxhits '$advanced.BIN_maxhits'
+#end if
+    < /dev/null &&
+
+## ---- run-level outputs to fixed names ----
+cp map_wd/output/Demultiplexing_Results_*.pdf demux_report.pdf &&
+cp map_wd/output/*_readcounts.txt readcounts.txt &&
+cp map_wd/output/Individual_Raw_Fastq_Files.tar.gz raw_fastqs.tar.gz
+    ]]></command>
+
+    <inputs>
+        <param name="parameters" type="data" format="xlsx" label="Parameters spreadsheet (.xlsx)"
+               help="The MAP parameters workbook ('UMIs and Primers', 'Bulk Sample Metadata' and 'Dictionary Update' tabs)."/>
+
+        <conditional name="mode">
+            <param name="type" type="select" label="Read type"
+                   help="Paired-end reads are merged with vsearch before demultiplexing (MAP's --pe_reads).">
+                <option value="single">Single-end / long reads (e.g., Oxford Nanopore, PacBio)</option>
+                <option value="pe">Paired-end (e.g., Illumina)</option>
+            </param>
+            <when value="single">
+                <param name="reads" type="data" format="fastqsanger.gz" multiple="true"
+                       label="Reads (one or more FASTQ.gz)" help="Non-demultiplexed reads. Multiple files are concatenated."/>
+            </when>
+            <when value="pe">
+                <param name="reads_r1" type="data" format="fastqsanger.gz" label="Forward reads (R1, FASTQ.gz)"/>
+                <param name="reads_r2" type="data" format="fastqsanger.gz" label="Reverse reads (R2, FASTQ.gz)"/>
+                <param name="ill_chimera_check" type="boolean" checked="true"
+                       label="Screen merged reads for chimeras (UCHIME)"
+                       help="Unchecking passes --no_Ill_chimera_check."/>
+            </when>
+        </conditional>
+
+        <param name="refs" type="data" format="fasta" multiple="true"
+               label="Reference libraries (SINTAX-formatted FASTA)"
+               help="One file per 'Reference Library' named in the parameters file. MAP matches each name as the START of a file name, so name the dataset accordingly: e.g. Reference Library 'BOLDistilled_COI_' matches a dataset named 'BOLDistilled_COI_Jul2026_SEQUENCES_sintax.fasta'. Spaces and other special characters in dataset names become '_'."/>
+
+        <param name="sintax_cutoff" type="float" value="0.6" min="0" max="1"
+               label="SINTAX confidence cutoff (--sintax_cutoff)"
+               help="Ranks assigned with lower confidence are left blank. Per-rank confidences are reported either way."/>
+
+        <conditional name="advanced">
+            <param name="customize" type="select" label="Advanced tuning parameters">
+                <option value="no">Use MAP defaults</option>
+                <option value="yes">Set advanced parameters</option>
+            </param>
+            <when value="no"/>
+            <when value="yes">
+                <param name="umi_overlap_min" type="float" value="0.75" label="UMI overlap minimum (--umi_overlap_min)"
+                       help="Multiplier on UMI length during demultiplexing. 0.75 for UMIs of 12 nt or more, 1.0 for shorter."/>
+                <param name="primer_overlap_min" type="float" value="0.75" label="Primer overlap minimum (--primer_overlap_min)"/>
+                <param name="error_umi1" type="float" value="0.125" label="Forward UMI max error rate (--error_umi1)"/>
+                <param name="error_umi2" type="float" value="0.125" label="Reverse UMI max error rate (--error_umi2)"/>
+                <param name="error_primer1" type="float" value="0.2" label="Forward primer max error rate (--error_primer1)"/>
+                <param name="error_primer2" type="float" value="0.2" label="Reverse primer max error rate (--error_primer2)"/>
+                <param name="min_read_and_primer_length" type="integer" value="100" min="1"
+                       label="Minimum raw read length (--min_read_and_primer_length)" help="Long reads only (chopper)."/>
+                <param name="max_read_and_primer_length" type="integer" value="1000" min="1"
+                       label="Maximum raw read length (--max_read_and_primer_length)" help="Long reads only (chopper)."/>
+                <param name="minqual" type="integer" value="10" min="0" label="Minimum mean read quality (--minqual)" help="Long reads only (chopper)."/>
+                <param name="maxee" type="float" value="1" min="0" label="Maximum expected errors (--maxee)" help="Paired-end only (vsearch --fastq_filter)."/>
+                <param name="Ill_abskew" type="float" value="2" label="Paired-end chimera abskew (--Ill_abskew)"/>
+                <param name="Ill_mindiv" type="float" value="0.8" label="Paired-end chimera mindiv (--Ill_mindiv)"/>
+                <param name="LR_abskew" type="float" value="10" label="Long-read chimera abskew (--LR_abskew)"/>
+                <param name="LR_mindiv" type="float" value="0.0005" label="Long-read chimera mindiv (--LR_mindiv)"/>
+                <param name="minsize_unoise" type="integer" value="2" min="1" label="Paired-end UNOISE minimum cluster size (--minsize_unoise)"/>
+                <param name="min_rep_prop" type="float" value="0.65" min="0" max="1"
+                       label="Minimum proportion of replicates with the OTU (--min_rep_prop)"/>
+                <param name="high_dens_prop" type="float" value="0.65" min="0" max="1"
+                       label="Minimum proportion of replicates in the high-density area (--high_dens_prop)"/>
+                <param name="alpha_quantile" type="float" value="0.9" min="0" max="1"
+                       label="Contamination floor quantile (--alpha_quantile)"/>
+                <param name="k_multiplier" type="float" value="1" min="0"
+                       label="Contamination floor multiplier (--k_multiplier)" help="Below 1 is more permissive, above 1 stricter."/>
+                <param name="BIN_percent_ID" type="float" value="0.85" min="0" max="1"
+                       label="Minimum identity to keep a BIN match (--BIN_percent_ID)" help="COI-5P amplicons of 300 bp or more only."/>
+                <param name="BIN_maxaccepts" type="integer" value="3" min="1" label="BIN match maxaccepts (--BIN_maxaccepts)"/>
+                <param name="BIN_maxhits" type="integer" value="3" min="1" label="BIN match maxhits (--BIN_maxhits)"/>
+            </when>
+        </conditional>
+    </inputs>
+
+    <outputs>
+        <data name="demux_report" format="pdf" label="${tool.name} on ${on_string}: demultiplexing report"
+              from_work_dir="demux_report.pdf"/>
+        <data name="readcounts" format="tabular" label="${tool.name} on ${on_string}: read counts"
+              from_work_dir="readcounts.txt"/>
+        <data name="raw_fastqs" format="binary" label="${tool.name} on ${on_string}: demultiplexed reads (tar.gz)"
+              from_work_dir="raw_fastqs.tar.gz"/>
+        <collection name="results_xlsx" type="list" label="${tool.name} on ${on_string}: results (Excel) per marker">
+            <discover_datasets pattern="Metabarcoding Results - (?P&lt;designation&gt;.+)\.xlsx"
+                               directory="map_wd/output" recurse="true" format="xlsx"/>
+        </collection>
+        <collection name="reports_html" type="list" label="${tool.name} on ${on_string}: HTML report per marker">
+            <discover_datasets pattern="MAP Report - (?P&lt;designation&gt;.+)\.html"
+                               directory="map_wd/output" recurse="true" format="html"/>
+        </collection>
+        <collection name="by_sample" type="list" label="${tool.name} on ${on_string}: results by sample per marker">
+            <discover_datasets pattern="Metabarcoding_Results_(?P&lt;designation&gt;.+)_BySample\.tsv"
+                               directory="map_wd/output" recurse="true" format="tabular"/>
+        </collection>
+        <collection name="by_replicate" type="list" label="${tool.name} on ${on_string}: results by replicate per marker">
+            <discover_datasets pattern="Metabarcoding_Results_(?P&lt;designation&gt;.+)_ByReplicate\.tsv"
+                               directory="map_wd/output" recurse="true" format="tabular"/>
+        </collection>
+        <collection name="negative_otus" type="list" label="${tool.name} on ${on_string}: negative-control OTUs per marker">
+            <discover_datasets pattern="(?P&lt;designation&gt;.+)_NegativeControlOTUs\.tsv"
+                               directory="map_wd/output" recurse="true" format="tabular"/>
+        </collection>
+    </outputs>
+
+    <tests>
+        <!--
+          Full end-to-end run of the bundled PHAUS_1K Oxford Nanopore demo (1,000 reads,
+          one COI-5P marker) against a small BOLDistilled subset, so the test needs no
+          1 GB download.
+        -->
+        <test>
+            <param name="parameters" value="parameters.xlsx" ftype="xlsx"/>
+            <conditional name="mode">
+                <param name="type" value="single"/>
+                <param name="reads" value="PHAUS_1K_RawReads.fastq.gz" ftype="fastqsanger.gz"/>
+            </conditional>
+            <param name="refs" value="BOLDistilled_COI_test_sintax.fasta" ftype="fasta"/>
+            <output name="readcounts">
+                <assert_contents>
+                    <has_line line="Raw Reads&#9;1000"/>
+                    <has_text text="With linked UMIs"/>
+                </assert_contents>
+            </output>
+            <output name="demux_report">
+                <assert_contents>
+                    <has_size min="1000"/>
+                </assert_contents>
+            </output>
+            <output_collection name="by_sample" type="list" count="1">
+                <element name="PHAUS_1K_COI-5P_658">
+                    <assert_contents>
+                        <has_text text="OTU_ID"/>
+                        <has_text text="BIN_Match_Status"/>
+                    </assert_contents>
+                </element>
+            </output_collection>
+            <output_collection name="results_xlsx" type="list" count="1"/>
+            <output_collection name="reports_html" type="list" count="1"/>
+        </test>
+    </tests>
+
+    <help><![CDATA[
+**MAP — Metabarcoding Analysis Pipeline**
+
+MAP turns raw, non-demultiplexed metabarcoding reads and a parameters spreadsheet into
+per-sample OTU tables with taxonomy (SINTAX, with per-rank confidence), contaminant
+filtering against negative controls, and, for COI-5P amplicons of 300 bp or more, BOLD BIN
+matches. It handles long reads (e.g. Oxford Nanopore) and paired-end short reads
+(e.g. Illumina), several markers per run, and plates sequenced in reverse orientation.
+
+**Inputs**
+
+* *Parameters spreadsheet (.xlsx)* — the MAP workbook (``UMIs and Primers``,
+  ``Bulk Sample Metadata`` and ``Dictionary Update`` tabs).
+* *Reads* — non-demultiplexed FASTQ.gz: one or more single-end files, or an R1/R2 pair.
+* *Reference libraries* — one SINTAX-formatted FASTA per ``Reference Library`` named in the
+  spreadsheet. MAP uses the file whose name **starts with** that Reference Library value,
+  so name your datasets to match (e.g. ``BOLDistilled_COI_`` matches
+  ``BOLDistilled_COI_Jul2026_SEQUENCES_sintax.fasta``). If a BOLDistilled library is named
+  but not supplied, MAP downloads the latest release (~1 GB) during the job, which needs
+  internet access on the Galaxy server.
+
+**Outputs**
+
+* *Demultiplexing report (PDF)* — reads per well, by plate.
+* *Read counts* — reads kept at each step.
+* *Demultiplexed reads (tar.gz)* — per-sample reads, e.g. for SRA submission.
+* Per marker (collections named ``<run>_<marker>_<length>``): the Excel results workbook,
+  the HTML report, results by sample and by replicate (TSV), and OTUs found in negative
+  controls.
+    ]]></help>
+
+    <expand macro="citations"/>
+</tool>
