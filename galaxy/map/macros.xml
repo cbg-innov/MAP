@@ -1,16 +1,18 @@
 <macros>
     <!--
       TOOL_VERSION is the MAP release (git tag vX.Y.Z, GHCR image X.Y.Z) and also
-      selects the container below. Bump VERSION_SUFFIX for wrapper-only changes.
-      Release by tagging vX.Y.Z (TOOL_VERSION, suffix 0) or vX.Y.Z+galaxyN
-      (suffix N); the release job checks the tag matches these two tokens.
+      selects the container below. On a release tag, CI sets both tokens from the
+      tag (.github/scripts/galaxy_version_from_tag.sh), so releasing needs no edit here:
+          vX.Y.Z           -> X.Y.Z+galaxy0  (new MAP release; push the image first)
+          vX.Y.Z+galaxyN   -> X.Y.Z+galaxyN  (wrapper-only change)
+      The values below are what branch pushes and pull requests are tested with.
 
       1.1.1 is the first MAP release whose reference check accepts any library
       named in the parameters file (1.1.0 only recognised BOLDistilled files and
       would download BOLDistilled on every Galaxy job).
     -->
     <token name="@TOOL_VERSION@">1.1.1</token>
-    <token name="@VERSION_SUFFIX@">0</token>
+    <token name="@VERSION_SUFFIX@">1</token>
     <token name="@PROFILE@">24.0</token>
 
     <xml name="requirements">
