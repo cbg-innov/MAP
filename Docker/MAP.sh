@@ -315,27 +315,6 @@ echo "Using paired-end reads: $([ "$pe_reads" -eq 1 ] && echo on || echo off)"
 echo "Saving OTU component reads: $([ "$componentreads" -eq 1 ] && echo on || echo off)"
 echo "Illumina chimera screen: $([ "$Ill_chimera_check" -eq 1 ] && echo on || echo off)"
 
-#### Report which reference library MAP will use, and fetch the BOLDdistilled
-#### sintax library on first use if none is present.
-reflib_present=( "$reference_lib_dir"/BOLDistilled*.fasta )
-if [ -e "${reflib_present[0]}" ]; then
-    for f in "${reflib_present[@]}"; do
-        echo "Using reference library: $(basename "$f")"
-    done
-else
-    echo "No reference library provided. MAP will download latest BOLDistilled release."
-    mkdir -p "$reference_lib_dir"
-    reflib_tmp="$(mktemp -d)"
-    curl -fSL https://us-sea-1.linodeobjects.com/boldistilled/sintax.zip -o "$reflib_tmp/sintax.zip"
-    python -m zipfile -e "$reflib_tmp/sintax.zip" "$reflib_tmp"
-    mv "$reflib_tmp"/sintax/* "$reference_lib_dir"/
-    rm -rf "$reflib_tmp"
-    reflib_present=( "$reference_lib_dir"/BOLDistilled*.fasta )
-    for f in "${reflib_present[@]}"; do
-        echo "****** Download complete. Using reference library: $(basename "$f")"
-    done
-fi
-
 #######################################################################
 ############################# FUNCTIONS ###############################
 #######################################################################
@@ -803,6 +782,53 @@ read -r minreads < <(sed -n '3p' runinfo.txt)
 minreads=${minreads%.*}   # convert to integer
 read -r otu_dist1  < <(sed -n '4p' runinfo.txt)
 read -r otu_dist2  < <(sed -n '5p' runinfo.txt)
+
+#### Check the reference library named for each marker in the parameters file ('Reference Library')
+#### is in the reference directory (--refs) as <name>*.fasta, and report which file each marker uses.
+#### A missing BOLDistilled library is downloaded (latest release); any other missing library stops the run.
+find_reflibs() {
+    reflib_missing=()
+    while IFS=$'\t' read -r lib markers; do
+        matches=( "$reference_lib_dir/$lib"*.fasta )
+        if [ -z "$lib" ]; then
+            echo "ERROR: 'Reference Library' is blank for ${markers} in the parameters file." >&2
+            exit 1
+        elif [ ! -e "${matches[0]}" ]; then
+            reflib_missing+=( "$lib" )
+        elif [ "${#matches[@]}" -gt 1 ]; then
+            echo "ERROR: Reference Library '${lib}' (${markers}) matches more than one file in ${reference_lib_dir}:" >&2
+            printf '           %s\n' "${matches[@]##*/}" >&2
+            echo "       Make the name in the parameters file specific enough to match just one." >&2
+            exit 1
+        elif [ "$1" = report ]; then
+            echo "Using reference library for ${markers}: ${matches[0]##*/}"
+        fi
+    done < <(awk -F'\t' 'NR > 1 { k = $12; m = $8 " (" $11 " bp)"; if (!((k, m) in seen)) { seen[k, m]; if (k in ord) lst[k] = lst[k] ", " m; else { ord[k] = ++n; lst[k] = m } } }
+                         END { for (k in ord) o[ord[k]] = k; for (i = 1; i <= n; i++) print o[i] "\t" lst[o[i]] }' "mapping_${runid}.txt")
+}
+find_reflibs
+for lib in "${reflib_missing[@]}"; do
+    if [[ "$lib" == BOLDistilled* ]] && [ -z "$reflib_downloaded" ]; then
+        echo "Reference library '${lib}' not found in ${reference_lib_dir}. MAP will download the latest BOLDistilled release."
+        mkdir -p "$reference_lib_dir" || { echo "ERROR: cannot create reference directory '${reference_lib_dir}'." >&2; exit 1; }
+        reflib_tmp="$(mktemp -d)"
+        curl -fSL https://us-sea-1.linodeobjects.com/boldistilled/sintax.zip -o "$reflib_tmp/sintax.zip" \
+            && python -m zipfile -e "$reflib_tmp/sintax.zip" "$reflib_tmp" \
+            && mv "$reflib_tmp"/sintax/* "$reference_lib_dir"/ \
+            || { echo "ERROR: BOLDistilled download failed (is there an internet connection?)." >&2; rm -rf "$reflib_tmp"; exit 1; }
+        rm -rf "$reflib_tmp"
+        reflib_downloaded=1
+    fi
+done
+find_reflibs report
+if [ "${#reflib_missing[@]}" -gt 0 ]; then
+    echo "ERROR: reference library not found in ${reference_lib_dir}: ${reflib_missing[*]}" >&2
+    echo "       MAP looks for <Reference Library>*.fasta, so give the start of the file name, without '.fasta'." >&2
+    echo "       .fasta files in that directory:" >&2
+    fasta_here=( "$reference_lib_dir"/*.fasta )
+    if [ -e "${fasta_here[0]}" ]; then printf '           %s\n' "${fasta_here[@]##*/}" >&2; else echo "           (none)" >&2; fi
+    exit 1
+fi
 
 
 #### Extract forward and reverse UMIs from mapping file

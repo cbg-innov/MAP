@@ -145,7 +145,7 @@ docker compose -f compose.yaml run --rm map \
 
 The latest **BOLDdistilled** COI SINTAX reference set is downloaded and unpacked into `/MAP/REFS` **at first run time** and needs an internet connection, and may prolong the MAP demo runtime slightly. The COI correction reference set is provided **at first build time** — no manual download needed. `REFS` is mounted as a named volume (`reflib`) so it persists across runs and can be shared between containers (see [Offline use & reusing the reference library](#offline-use--reusing-the-reference-library) for details on how that persistence works). If you wish to change the reference library, make sure that the parameters.xlsx sheet reflects the new name and copy your vsearch reference file into your working directory. 
 
-`--refs` points at a folder containing your custom reference library (e.g. `refs`), and must be independent of the `run` directory. We recommend `<PATH>/workdir/data/refs/<reference_fasta>`:
+`--refs` points at a folder containing your custom reference library (e.g. `refs`), and must be independent of the `run` directory. We recommend `<PATH>/workdir/data/refs`. The files should be sintax-formatted .fasta files (e.g., 'ITS_eukaryotes_ref_sintax.fasta'):
 
 ```bash
 # host folder containing: reads.fastq.gz,  parameters.xlsx, and compose.yaml
@@ -220,7 +220,7 @@ Important parameters are set in the `.xlsx` parameters file. Start from the bund
 | | **Forward / Reverse Primer Name** | This is where you indicate the name you will use for the corresponding Forward / Reverse Primer Sequences that are used in the 'UMIs and Primers' tab (e.g., PHAUS_F2, PHAUS_R3) |
 | | **Forward / Reverse Primer Sequence** | This is where you indicate the sequence that corresponds with the primer name you provided  (e.g., AYATRGCHTTYCCHCG) |
 | | **Marker** | Locus name (e.g. `COI-5P`) |
-| | **Reference Library** | SINTAX‑formatted reference DB name (e.g., BOLDistilled_COI_Apr2026). Note: BOLDistilled_COI_ can be used to allow for updated/different libraries to be used without errors. |
+| | **Reference Library** | SINTAX‑formatted reference DB name (e.g., BOLDistilled_COI_Apr2026 or BOLDistilled_COI_ for BOLDistilled_COI_Apr2026_sintax.fasta). Note: BOLDistilled_COI_ can be used to allow for updated/different libraries to be used without errors. |
 | | **Min / Max Amplicon Length** | Length filter  WITHOUT UMIs or primers or single reads (e.g., ONT). |
 | | **Target amplicon length** | Expected amplicon length (no primers/UMIs) |
 | | **Reverse Complement** *(optional)* | `Yes` for a primer pair whose reads come off the sequencer from the reverse-primer end — i.e. plates built with the primer/UMI layout reversed, so this row's "forward" primer is really the reverse primer (e.g. F2 = `GRTGNCCRAARAAYCA`, R2 = `AYATRGCHTTYCCHCG`). Those reads are demultiplexed exactly as sequenced, then reverse-complemented after trimming so every sample is clustered, classified and BIN-matched on the plus strand. Leave blank, or omit the column entirely, for normal pairs. Not supported with symmetrical UMIs. |
