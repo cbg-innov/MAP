@@ -389,7 +389,8 @@ task1() (
         #### Dereplicate. 
         vsearch --derep_fulllength "${sampleid}.fasta" \
             --output "${sampleid}.d.fasta" \
-            --sizeout
+            --sizeout \
+            || { echo "ERROR: vsearch failed for sample ${sampleid}" >&2; exit 1; }
 
         if [ "$Ill_chimera_check" -eq 1 ]; then
             echo -e "******** Performing chimera screen..."
@@ -398,7 +399,8 @@ task1() (
                 --nonchimeras "${sampleid}.nonchimeras.fasta" \
                 --fasta_width 0 \
                 --abskew $Ill_abskew \
-                --mindiv $Ill_mindiv
+                --mindiv $Ill_mindiv \
+            || { echo "ERROR: vsearch failed for sample ${sampleid}" >&2; exit 1; }
         else
             echo -e "******** Chimera screen disabled (--no_Ill_chimera_check), skipping..."
             mv "${sampleid}.d.fasta" "${sampleid}".nonchimeras.fasta
@@ -417,7 +419,8 @@ task1() (
             --sizein \
             --sizeout \
             --minsize $minsize_unoise \
-            --threads 1
+            --threads 1 \
+            || { echo "ERROR: vsearch failed for sample ${sampleid}" >&2; exit 1; }
         else
             vsearch --cluster_unoise "${sampleid}.nonchimeras.fasta" \
             --consout "${sampleid}_consensus.fasta" \
@@ -426,7 +429,8 @@ task1() (
             --sizein \
             --sizeout \
             --minsize $minsize_unoise \
-            --threads 1
+            --threads 1 \
+            || { echo "ERROR: vsearch failed for sample ${sampleid}" >&2; exit 1; }
         fi
     else
         if [ "$componentreads" -eq 0 ]; then
@@ -435,7 +439,8 @@ task1() (
             --consout "${sampleid}_consensus.fasta" \
             --iddef 3 \
             --sizeout \
-            --threads 1
+            --threads 1 \
+            || { echo "ERROR: vsearch failed for sample ${sampleid}" >&2; exit 1; }
         else
             vsearch --cluster_fast "${sampleid}.nonchimeras.fasta" \
             --id "$(awk -v d="$otu_dist1" 'BEGIN { printf "%.6f", (100 - d)/100 }')" \
@@ -443,7 +448,8 @@ task1() (
             --clusters "${sampleid}|OTU" \
             --iddef 3 \
             --sizeout \
-            --threads 1
+            --threads 1 \
+            || { echo "ERROR: vsearch failed for sample ${sampleid}" >&2; exit 1; }
         fi
     fi
 
@@ -1323,8 +1329,8 @@ strip_lower() {
 
     base="${infile%.fasta}"
 
-    #Do UMI and primer trimming by removing all lowercase DNA seqs (these are umis and primers)
-    awk 'NR % 2 == 0 { gsub(/[a-z]/, "") }1' "$infile" > "${base}.tr.fasta"
+    #Keep only reads with primers (lowercase. Do UMI and primer trimming by removing all lowercase DNA seqs (these are umis and primers)
+    awk 'NR % 2 == 1 { h = $0; next } /[a-z]/ { print h; gsub(/[a-z]/, ""); print }' "$infile" > "${base}.tr.fasta"
 
     cutadapt -j 1 \
         -m "$min" \
@@ -1476,7 +1482,12 @@ for marker_dir in */; do
     ####
 
     #### Run task1 in parallel
-    parallel -j "$cores" task1 {} ::: *.fasta
+    parallel -j "$jobs" --halt now,fail=1 task1 {} ::: *.fasta
+    # Run check to see if 'parallel' stopped
+    if [ $? -ne 0 ]; then
+        echo "ERROR: clustering failed for at least one sample (see the message above). If memory ran out, raise --mem_per_job to run fewer samples run at once." >&2
+        exit 1
+    fi
 
     #### Run the global cleanup once
     echo "Running global cleanup step..."
