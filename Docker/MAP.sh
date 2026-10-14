@@ -108,7 +108,7 @@ BIN_maxaccepts=3 #parameter to feed VSEARCH's usearch_global command.
 BIN_maxhits=3 #parameter to feed VSEARCH's usearch_global command.
 
 mem_per_job=auto #memory useage per parallel job. 'auto' estimates RAM needs from the largest individual file (i.e., a sample). Enter a number (in GB) to override 'auto' estimate.
-mem_per_job_mult=6 # Safety multiplier applied to the largest sample file when estimating.
+mem_per_job_mult=5 # Safety multiplier applied to the largest sample file when estimating.
 
 
 while [[ $# -gt 0 ]]; do
@@ -267,6 +267,14 @@ while [[ $# -gt 0 ]]; do
         ;;
     --BIN_maxhits)
         BIN_maxhits="$2"
+        shift 2
+        ;;
+    --mem_per_job)
+        mem_per_job="$2"
+        shift 2
+        ;;
+    --mem_per_job_mult)
+        mem_per_job="$2"
         shift 2
         ;;
     *)
