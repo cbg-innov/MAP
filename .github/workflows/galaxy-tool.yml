@@ -92,7 +92,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # vX.Y.Z publishes MAP X.Y.Z; vX.Y.Z+galaxyN publishes a wrapper-only update.
+      # vX.Y.Z publishes MAP X.Y.Z (wrapper version X.Y.Z).
       # Stops if the ghcr.io/cbg-innov/map:X.Y.Z image hasn't been pushed yet.
       - name: Set wrapper version from release tag
         run: bash .github/scripts/galaxy_version_from_tag.sh

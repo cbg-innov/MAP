@@ -50,6 +50,7 @@ reference_lib_dir="${reference_lib_dir:-/MAP/REFS}"
 working_dir="${working_dir:-/MAP/Metabarcoding}" 
 scripts_dir="${scripts_dir:-/MAP/SCRIPTS}"     
 sintax_cutoff=0.6 #0-1
+sintax_randseed=0 #Off by default. A positive integer seeds SINTAX's bootstrap so confidences are reproducible; SINTAX then runs on 1 thread.
 pe_reads=0 #Off by default. Use --pe_reads to indicate a paired-end sequencing run (e.g., Illumina)
 componentreads=0 #Off by default. Use --componentreads to generate files.
 overwrite_output=0 #Off by default. Use --overwrite to replace a previous run's output without asking.
@@ -104,11 +105,12 @@ k_multiplier=1 #factor multiplied by alpha to determine contaminant floor. 1 by 
 
 #### III. BIN identification (optional)
 BIN_percent_ID=0.85 # We recommend 0.85 for short-read data. This is the threshold to keep matches to BINs in final database, regardless of 'formal' BIN assignment. Thresholds below the universal threshold will be labeled "NO MATCH" in final data. 
-BIN_maxaccepts=3 #parameter to feed VSEARCH's usearch_global command.
+BIN_maxaccepts=32 #parameter to feed VSEARCH's usearch_global command.
 BIN_maxhits=3 #parameter to feed VSEARCH's usearch_global command.
+BIN_maxrejects=256 #parameter to feed VSEARCH's usearch_global command.
 
 mem_per_job=auto #memory useage per parallel job. 'auto' estimates RAM needs from the largest individual file (i.e., a sample). Enter a number (in GB) to override 'auto' estimate.
-mem_per_job_mult=5 # Safety multiplier applied to the largest sample file when estimating.
+mem_per_job_mult=6 # Safety multiplier applied to the largest sample file when estimating.
 
 
 while [[ $# -gt 0 ]]; do
@@ -145,6 +147,10 @@ while [[ $# -gt 0 ]]; do
         sintax_cutoff="$2"
         shift 2
         ;;
+    --sintax_randseed)
+        sintax_randseed="$2"
+        shift 2
+        ;;
     --pe_reads)
         pe_reads=1
         shift
@@ -167,6 +173,10 @@ while [[ $# -gt 0 ]]; do
         ;;
     --mem_per_job)
         mem_per_job="$2"
+        shift 2
+        ;;
+    --mem_per_job_mult)
+        mem_per_job_mult="$2"
         shift 2
         ;;
     --ref_seq_corr)
@@ -269,12 +279,8 @@ while [[ $# -gt 0 ]]; do
         BIN_maxhits="$2"
         shift 2
         ;;
-    --mem_per_job)
-        mem_per_job="$2"
-        shift 2
-        ;;
-    --mem_per_job_mult)
-        mem_per_job="$2"
+    --BIN_maxrejects)
+        BIN_maxrejects="$2"
         shift 2
         ;;
     *)
@@ -284,7 +290,24 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-#### Resolve relative input paths against the launch directory (BEFORE any cd) (to avoid using the full $HOME path). 
+#### Options used in integer arithmetic or passed to vsearch as integers
+if ! [[ "$mem_per_job_mult" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: --mem_per_job_mult must be a positive whole number (got '$mem_per_job_mult')." >&2
+    exit 1
+fi
+if ! [[ "$sintax_randseed" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: --sintax_randseed must be a whole number; 0 (default) leaves SINTAX unseeded (got '$sintax_randseed')." >&2
+    exit 1
+fi
+
+for opt in BIN_maxaccepts BIN_maxhits BIN_maxrejects; do
+    if ! [[ "${!opt}" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: --$opt must be a whole number (got '${!opt}')." >&2
+        exit 1
+    fi
+done
+
+#### Resolve relative input paths against the launch directory (BEFORE any cd) (to avoid using the full $HOME path).
 make_abs() { case "$1" in /*) printf '%s' "$1" ;; "") printf '' ;; *) printf '%s/%s' "$PWD" "$1" ;; esac; }
 fastq_abs=""
 for f in $fastq_file; do
@@ -679,6 +702,15 @@ up = pd.read_excel(PF, sheet_name="UMIs and Primers", header=plate_row)
 up.columns = [str(c).strip() for c in up.columns]
 up = up[up["Sample"].notna() & (up["Sample"].astype(str).str.strip() != "")]
 
+# Each row is one well, and its reads are written to a file named after the sample, so a name
+# used on two rows would keep only one well's reads.
+sample_names = up["Sample"].astype(str).str.strip()
+repeated = sorted(sample_names[sample_names.duplicated()].unique())
+if repeated:
+    sys.exit("ERROR: sample name(s) used on more than one row of 'UMIs and Primers': "
+             + ", ".join(repeated) + "\n"
+             "       Each well needs its own name (e.g. add _Rep2 for a replicate, or the plate to a control name).")
+
 # 'Dictionary Update': primer lookup + run-level params 
 dic = pd.read_excel(PF, sheet_name="Dictionary Update")
 dic.columns = [str(c).strip() for c in dic.columns]
@@ -799,7 +831,8 @@ read -r otu_dist2  < <(sed -n '5p' runinfo.txt)
 
 #### Check the reference library named for each marker in the parameters file ('Reference Library')
 #### is in the reference directory (--refs) as <name>*.fasta, and report which file each marker uses.
-#### A missing BOLDistilled library is downloaded (latest release); any other missing library stops the run.
+#### The latest BOLDistilled library will be downloaded if specified in parameter file, otherwise a missing library stops the run.
+bin_marker_re='COI-5P \(([3-9][0-9]{2}|[1-9][0-9]{3,}) bp\)'
 find_reflibs() {
     reflib_missing=()
     while IFS=$'\t' read -r lib markers; do
@@ -816,6 +849,18 @@ find_reflibs() {
             exit 1
         elif [ "$1" = report ]; then
             echo "Using reference library for ${markers}: ${matches[0]##*/}"
+            #### BIN matching (COI-5P of 300 bp or more) searches <library>*vsearch; with two such files both would go to vsearch
+            if [[ "$markers" =~ $bin_marker_re ]]; then
+                bin_idx=( "$reference_lib_dir/$lib"*vsearch )
+                if [ "${#bin_idx[@]}" -gt 1 ]; then
+                    echo "ERROR: Reference Library '${lib}' (${markers}) matches more than one BIN index (*vsearch) in ${reference_lib_dir}:" >&2
+                    printf '           %s\n' "${bin_idx[@]##*/}" >&2
+                    echo "       Keep only one of them in that directory." >&2
+                    exit 1
+                elif [ -e "${bin_idx[0]}" ]; then
+                    echo "Using BIN index for ${markers}: ${bin_idx[0]##*/}"
+                fi
+            fi
         fi
     done < <(awk -F'\t' 'NR > 1 { k = $12; m = $8 " (" $11 " bp)"; if (!((k, m) in seen)) { seen[k, m]; if (k in ord) lst[k] = lst[k] ", " m; else { ord[k] = ++n; lst[k] = m } } }
                          END { for (k in ord) o[ord[k]] = k; for (i = 1; i <= n; i++) print o[i] "\t" lst[o[i]] }' "mapping_${runid}.txt")
@@ -901,31 +946,12 @@ min_umi_len_rev=$(awk 'NR>1 {print length($0)}' rev_umis_rc.fasta | sort -n | he
 ############ STEP 3a: Merge PE reads (Illumina only) ##################
 #######################################################################
 
-fastq_prefix() {
-    case "$1" in
-        *.gz) gzip -dc "$1" 2>/dev/null | head -c 5 ;;
-        *)    head -c 5 "$1" 2>/dev/null ;;
-    esac
-}
-#### Check if any file matching the pattern shares the same prefix as all.fastq.gz (to save time for repeat analysis)
-fastq_prefix() {
-    case "$1" in
-        *.gz) gzip -dc "$1" 2>/dev/null | head -c 5 ;;
-        *)    head -c 5 "$1" 2>/dev/null ;;
-    esac
-}
-
+#### Reuse all.fastq.gz from a previous run (to save time for repeat analysis) only if it was made from the same
+#### input files: their names and sizes are recorded in all.fastq.gz.inputs when all.fastq.gz is written.
+input_signature=$(for f in $fastq_file; do printf '%s\t%s\n' "$(basename "$f")" "$(stat -L -c %s "$f" 2>/dev/null || stat -L -f %z "$f")"; done)
 match=0
-if [ -f all.fastq.gz ]; then
-    prefix_all=$(gzip -dc all.fastq.gz 2>/dev/null | head -c 5)
-    for f in $fastq_file; do
-        [ -f "$f" ] || continue
-        prefix_f=$(fastq_prefix "$f")
-        if [ "$prefix_all" = "$prefix_f" ]; then
-            match=1
-            break
-        fi
-    done
+if [ -f all.fastq.gz ] && [ -f all.fastq.gz.inputs ] && [ "$(cat all.fastq.gz.inputs)" = "$input_signature" ]; then
+    match=1
 fi
 
 #### Merge paired-end reads (PAIRED-END READS only)
@@ -935,8 +961,10 @@ if [ "$pe_reads" -eq 1 ]; then #if already a copy of all.fastq.gz present, skip 
         echo -e ****** "decompressing all.fastq.gz"
         pigz -d -k -p $cores all.fastq.gz
     else
-        echo "WARNING: all.fastq.gz exists but does not match input files. Renaming to OLD_all.fastq.gz and re-merging."
-        mv all.fastq.gz OLD_all.fastq.gz
+        if [ -f all.fastq.gz ]; then
+            echo "WARNING: all.fastq.gz exists but was not made from these input files. Renaming to OLD_all.fastq.gz and re-merging."
+            mv all.fastq.gz OLD_all.fastq.gz
+        fi
         #### Get read1 and read2 from fastq files. must follow either _R1* / _R2* OR _1.fastq.gz /_2.fastq.gz convention.
         read1=( $(ls $fastq_file 2>/dev/null | grep -E '_R1[_.]|_1\.fastq') )
         read2=( $(ls $fastq_file 2>/dev/null | grep -E '_R2[_.]|_2\.fastq') )
@@ -1016,7 +1044,8 @@ fi
 if [ "$match" = "1" ]; then
     echo -e "******** all.fastq.gz found, skipping..."
 else
-    pigz -p $cores -k all.fastq
+    pigz -f -p $cores -k all.fastq
+    printf '%s\n' "$input_signature" > all.fastq.gz.inputs
 fi
 rm all.fastq
 
@@ -1024,8 +1053,8 @@ rm all.fastq
 echo -e "******** Demultiplexing reads..."
 
 ##### Evaluate whether the UMIs provided are symmetrical or asymmetrical.
-if [ $(diff <(awk 'NR>1 {print $6}' mapping_"$runid".txt) \
-           <(awk 'NR>1 {print $7}' mapping_"$runid".txt) | wc -l) -gt 0 ]; then
+if [ $(diff <(awk -F'\t' 'NR>1 {print $6}' mapping_"$runid".txt) \
+           <(awk -F'\t' 'NR>1 {print $7}' mapping_"$runid".txt) | wc -l) -gt 0 ]; then
     symm="asymmetrical UMIs"
     echo "$symm"
 else
@@ -1225,8 +1254,8 @@ if [ "$symm" = "symmetrical UMIs" ]; then
     wait
 
     sanitized_name_index="name_map.tsv"
-    tail -n +2 "mapping_${runid}.txt" |
-    while IFS=$'\t' read -r plt well samp fwdp revp fwdu revu marker minlen maxlen amplen _rest; do
+    tail -n +2 "mapping_${runid}.txt" | tr '\t' '\037' |
+    while IFS=$'\037' read -r plt well samp fwdp revp fwdu revu marker minlen maxlen amplen _rest; do
 
         #### List all possible original filenames
         demux_f=(
@@ -1269,7 +1298,7 @@ else
 #### Change the fastq file names to match the samples
     sanitized_name_index="name_map.tsv"
     
-    tail -n +2 "mapping_${runid}.txt" | while IFS=$'\t' read -r plt well samp fwdp revp fwdu revu marker minlen maxlen amplen _rest; do
+    tail -n +2 "mapping_${runid}.txt" | tr '\t' '\037' | while IFS=$'\037' read -r plt well samp fwdp revp fwdu revu marker minlen maxlen amplen _rest; do
     #### Original filename based on UMI mapping
         old="$(echo "${fwdu}...>${revu}.fastq" | tr -d '[:space:]')"
 
@@ -1357,8 +1386,8 @@ parallel -j "$cores" --colsep '\t' \
 rm *.tr.fasta cutadapt_jobs.tsv
 
 #### Organize FASTA files by marker/amplicon length
-tail -n +2 "mapping_${runid}.txt" |
-while IFS=$'\t' read -r plt well samp fwdp revp fwdu revu marker min max amplen _rest; do
+tail -n +2 "mapping_${runid}.txt" | tr '\t' '\037' |
+while IFS=$'\037' read -r plt well samp fwdp revp fwdu revu marker min max amplen _rest; do
     fasta_file="${samp}_${marker}_${amplen}bp.fasta"
     dest="${marker}_${amplen}bp"
 
@@ -1382,6 +1411,32 @@ mkdir -p ./output
 #~#~#~#~#~#~#~#~#~#~#~#~#~#~##~#~#~#
 #~#~#~#~ MARKER FOR LOOP #~#~#~#~#~#
 #~#~#~#~#~~#~#~#~#~#~#~#~#~#~#~#~#~#
+
+#### Failed steps are given folders with '_INCOMPLETE' suffix and the run continues with the next marker.
+incomplete_markers=()
+#### BIN matching loads the whole index into memory, which is currently about 5-6.5 GB for BOLDistilled reference database. Warn user if memory allotment is too small.
+bin_mem_check() {   # $1 = index size in bytes, $2 = description for the message
+    [ "${mem_total_kb:-0}" -gt 0 ] || return 0
+    local need_kb=$(( $1 / 1024 )) need_gb avail_gb
+    need_gb=$(awk -v k="$need_kb" 'BEGIN { printf "%.1f", k / 1048576 }')
+    avail_gb=$(awk -v k="$mem_total_kb" 'BEGIN { printf "%.1f", k / 1048576 }')
+    if [ "$need_kb" -ge "$mem_total_kb" ]; then
+        echo "ERROR: BIN matching loads ${2} (~${need_gb} GB) into memory, but only ${avail_gb} GB is available to MAP." >&2
+        echo "       Give Docker more memory (Docker Desktop: Settings > Resources > Memory)." >&2
+        return 1
+    elif [ $(( need_kb * 115 / 100 )) -ge "$mem_total_kb" ]; then
+        echo "WARNING: BIN matching loads ${2} (~${need_gb} GB) into memory, and ${avail_gb} GB is available to MAP;"
+        echo "         the search may be stopped for lack of memory. Giving Docker 1-2 GB more avoids this."
+    fi
+    return 0
+}
+
+marker_incomplete() {
+    echo "ERROR: $1 failed for ${dirname}; skipping the rest of this marker (its files are in output/${dirname}_INCOMPLETE)." >&2
+    incomplete_markers+=("${dirname}: $1")
+    cd "$working_dir" || exit 1
+    mv "${marker_dir%/}" "./output/${dirname}_INCOMPLETE"
+}
 
 for marker_dir in */; do
      #### Skip unwanted directory
@@ -1531,10 +1586,12 @@ for marker_dir in */; do
         --threads $cores \
         --sizein \
         --sizeout \
-        --uc all_otus_cluster_info.uc
-  
+        --uc all_otus_cluster_info.uc \
+        || { marker_incomplete "step 6 (run-wide clustering)"; continue; }
+
     #### Reformat run-wide OTU info
-    Rscript "$scripts_dir/2-MAP_runwideotuformat.R" "$PWD"
+    Rscript "$scripts_dir/2-MAP_runwideotuformat.R" "$PWD" \
+        || { marker_incomplete "step 6 (2-MAP_runwideotuformat.R)"; continue; }
 
     rm all_otus_cluster_info.uc 
 
@@ -1554,7 +1611,8 @@ for marker_dir in */; do
         --nonchimeras all_otus_consensus.fasta \
         --fasta_width 0 \
         --abskew $LR_abskew \
-        --mindiv $LR_mindiv
+        --mindiv $LR_mindiv \
+        || { marker_incomplete "step 7 (chimera screen)"; continue; }
     else
         mv all_otus_consensus.fasta2 all_otus_consensus.fasta
     fi
@@ -1587,7 +1645,8 @@ for marker_dir in */; do
 
     if [[ "$marker" == "COI-5P" && "$ampsize" -ge 500 ]]; then
         echo "******** Sequence-correcting OTU consensus sequences..."
-        python "$scripts_dir/3-MAP_sequence_correction.py" "all_otus" "$PWD"
+        python "$scripts_dir/3-MAP_sequence_correction.py" "all_otus" "$PWD" \
+            || { marker_incomplete "step 8 (3-MAP_sequence_correction.py)"; continue; }
     else
         mv "all_otus_consensus.fasta" "all_otus_corrected_otus.fas"
     fi 
@@ -1598,12 +1657,23 @@ for marker_dir in */; do
     db_path=$(ls -d $reference_lib_dir/"$reflib"*.fasta)
 
     #### Identify OTUs using sintax
+    #### --sintax_randseed: a fixed seed makes the bootstrap confidences reproducible, which vsearch only guarantees on 1 thread
+    if [ "$sintax_randseed" -gt 0 ]; then
+        sintax_threads=1
+        sintax_seed_opt=(--randseed "$sintax_randseed")
+        echo "******** SINTAX seeded with --randseed $sintax_randseed (1 thread, reproducible confidences)"
+    else
+        sintax_threads=$cores
+        sintax_seed_opt=()
+    fi
     vsearch --sintax all_otus_corrected_otus.fas \
         -db $db_path \
         -tabbedout temp_sintax_output.txt \
         -strand plus \
         -sintax_cutoff $sintax_cutoff \
-        -threads $cores
+        "${sintax_seed_opt[@]}" \
+        -threads $sintax_threads \
+        || { marker_incomplete "step 9 (SINTAX)"; continue; }
 
 #######################################################################
 ######################## STEP 10: Remove contaminants #########################
@@ -1611,15 +1681,16 @@ for marker_dir in */; do
 
     #### De-noise data
     echo -e "******** Removing contaminants ..."
-    Rscript "$scripts_dir/4-RemoveContaminants.R" "$PWD" "$runid" "$marker" $ampsize $min_rep_prop $high_dens_prop $alpha_default $alpha_quantile $k_multiplier "../mapping_${runid}.txt"
+    Rscript "$scripts_dir/4-RemoveContaminants.R" "$PWD" "$runid" "$marker" $ampsize $min_rep_prop $high_dens_prop $alpha_default $alpha_quantile $k_multiplier "../mapping_${runid}.txt" \
+        || { marker_incomplete "step 10 (4-RemoveContaminants.R)"; continue; }
        
     #### Create a temporary reduced mapping file for this marker/ampsize
     tmp_mapping="temp_mapping_${runid}_${marker}_${ampsize}.txt"
     awk -F'\t' -v m="$marker" -v a="$ampsize" '$8 == m && $11 == a' "../mapping_${runid}.txt" > "$tmp_mapping"
-    echo -e $marker marker $runid runid $ampsize ampsize $tmp_mapping tmp_mapping $minreads minreads $numreps numreps
 
     echo -e "******** Finalizing data..."
-    Rscript "$scripts_dir/5-MAP_final_results.R" "$runid" "$marker" $minreads $numreps $ampsize "$PWD" "$reflib" $componentreads $params_file
+    Rscript "$scripts_dir/5-MAP_final_results.R" "$runid" "$marker" $minreads $numreps $ampsize "$PWD" "$reflib" $componentreads $params_file \
+        || { marker_incomplete "step 10 (5-MAP_final_results.R)"; continue; }
     rm all_otus_raw_consensus.fasta all_otus1_corrected_otus.fasta2 all_otus_consensus.fasta2 all_otus_consensus.chimeras.fasta
     rm all_otus_consensus.fasta all_otus_run_wide_OTU_info.txt temp.fasta temp_sintax_output.txt df.txt
 
@@ -1637,6 +1708,9 @@ for marker_dir in */; do
         vsearch_db=$(ls -d $reference_lib_dir/"$reflib"*vsearch)
         
         if [ ! -f "$vsearch_db" ]; then
+          #### building the index needs about as much memory as the index, which is ~4.2 x the library's size
+          bin_mem_check $(( $(wc -c < "$db_path") * 9 / 2 )) "the index built from ${db_path##*/}" \
+              || { marker_incomplete "step 11 (BIN search: not enough memory)"; continue; }
           #### make vsearch reference library from sintax
           echo -e "******** Creating vsearch reference library..."
           #### Name the vsearch DB after the actual dated reference fasta
@@ -1651,7 +1725,10 @@ for marker_dir in */; do
           vsearch --makeudb_usearch $reference_lib_dir/temp_sintax_no_spaces.fasta --output $reference_lib_dir/"$vsearch_name".vsearch
           vsearch_db=$(ls -d $reference_lib_dir/"$reflib"*vsearch)
           rm $reference_lib_dir/temp_sintax_no_spaces.fasta
+          [ -f "$vsearch_db" ] || { marker_incomplete "step 11 (building the BIN index)"; continue; }
         fi
+        bin_mem_check "$(wc -c < "$vsearch_db")" "the BIN index ${vsearch_db##*/}" \
+            || { marker_incomplete "step 11 (BIN search: not enough memory)"; continue; }
 
         echo -e "******** Performing BIN match..."
         #### Convert FASTA to single-line
@@ -1666,7 +1743,9 @@ for marker_dir in */; do
             --id $BIN_percent_ID \
             --maxhits $BIN_maxhits \
             --maxaccepts $BIN_maxaccepts \
-            --threads $cores
+            --maxrejects $BIN_maxrejects \
+            --threads $cores \
+            || { marker_incomplete "step 11 (BIN search)"; continue; }
 
         #### Remove low-level hits from VSEARCH results
         min_overlap=$(printf "%.0f" "$(echo "$ampsize * 0.75" | bc -l)")
@@ -1675,6 +1754,20 @@ for marker_dir in */; do
             $4 >= min_overlap { print }
             ' temp_vsearch_output.txt | sort -k1,1 -k3nr -k4nr | awk '!seen[$1]++' > filtered_vsearch_output.txt
         
+        #### Take taxonomy of BIN hit from the SINTAX library if BIN index headers do not provide taxonomy info.
+        if [ -s filtered_vsearch_output.txt ] && ! grep -q ';tax=' filtered_vsearch_output.txt; then
+            echo "BIN index headers carry no taxonomy; taking it from ${db_path##*/}."
+            awk -F'\t' 'BEGIN { OFS = "\t" }
+                FNR == 1 { f++ }
+                f == 1 { split($2, h, "|"); need[h[1]] = 1; next }
+                f == 2 { if (/^>/) { id = substr($0, 2); sub(/\|.*/, "", id)
+                             if ((id in need) && match($0, /;tax=.*/)) { t = substr($0, RSTART); gsub(/ /, "_", t); tax[id] = t } }
+                         next }
+                { split($2, h, "|"); if (h[1] in tax) $2 = $2 tax[h[1]]; print }
+            ' filtered_vsearch_output.txt "$db_path" filtered_vsearch_output.txt > filtered_vsearch_output.tmp \
+                && mv filtered_vsearch_output.tmp filtered_vsearch_output.txt
+        fi
+
         #### Parse hit column into ProcessID and BIN;tax=
         awk -F'\t' 'BEGIN { OFS="\t" } $2 ~ /\|/ { split($2, hit_parts, "|"); print $1, hit_parts[1], hit_parts[2], $3, $4 }' filtered_vsearch_output.txt > parsed_vsearch_output.txt
        
@@ -1694,19 +1787,22 @@ for marker_dir in */; do
 
             gsub(/^tax=/, "", taxpart)   # Remove "tax="
 
-            # Split into individual ranks
+            # Place each rank by its sintax prefix (d: counts as k:), so there are always seven rank
+            # columns even when a reference header lacks a rank; %ID and overlap stay in columns 11-12
+            delete rank
             n = split(taxpart, ranks, ",")
-
-            # Extract only the taxon names from each rank
             for (i = 1; i <= n; i++) {
-                sub(/^[a-z]:/, "", ranks[i])   # Remove sintax rank prefixes (e.g., k:, p:, etc)
+                if (match(ranks[i], /^[a-z]:/)) {
+                    p = substr(ranks[i], 1, 1); if (p == "d") p = "k"
+                    rank[p] = substr(ranks[i], 3)
+                }
             }
 
             # Print: original col1/col2, BOLD code, then taxonomy fields, then col4/col5
             printf "%s\t%s\t%s\t", $1, $2, bold
 
-            for (i = 1; i <= n; i++) {
-                printf "%s\t", ranks[i]
+            for (i = 1; i <= 7; i++) {
+                printf "%s\t", rank[substr("kpcofgs", i, 1)]
             }
 
             printf "%s\t%s\n", $4, $5
@@ -1730,7 +1826,8 @@ for marker_dir in */; do
         }' final_output.txt > final_output_with_bin_match.txt
 
         #### Add BIN match results to "by sample" results tab in Excel output
-        Rscript "$scripts_dir/6-MAP_binmatch.R" "$runid" "$PWD" "$marker" $ampsize
+        Rscript "$scripts_dir/6-MAP_binmatch.R" "$runid" "$PWD" "$marker" $ampsize \
+            || { marker_incomplete "step 11 (6-MAP_binmatch.R)"; continue; }
         
 #######################################################################
 ############# STEP 12: Generate output and html report ################
@@ -1746,8 +1843,12 @@ numreps: $numreps
 param_file: "$params_file"
 EOF
 
-        quarto render "$scripts_dir/7b-MAP_reporting_with_bins.qmd" --execute-params params.yaml
-        mv "$scripts_dir/7b-MAP_reporting_with_bins.html" "$PWD/MAP Report - "${runid}"_"${marker}"_${ampsize}.html"
+        #### Render a copy in the marker folder.
+        cp "$scripts_dir/7b-MAP_reporting_with_bins.qmd" . \
+            && quarto render 7b-MAP_reporting_with_bins.qmd --execute-params params.yaml \
+            || { marker_incomplete "step 12 (HTML report)"; continue; }
+        mv 7b-MAP_reporting_with_bins.html "$PWD/MAP Report - "${runid}"_"${marker}"_${ampsize}.html"
+        rm -f 7b-MAP_reporting_with_bins.qmd
 
         #### Tidy up directory
         rm params.yaml temp_vsearch_output.txt filtered_vsearch_output.txt parsed_vsearch_output.txt final_output.txt final_output_with_bin_match.txt temp_toBIN.fasta temp_mapping*.txt   
@@ -1762,8 +1863,12 @@ numreps: $numreps
 param_file: "$params_file"
 EOF
 
-        quarto render "$scripts_dir/7a-MAP_reporting.qmd" --execute-params params.yaml
-        mv "$scripts_dir/7a-MAP_reporting.html" "$PWD/MAP Report - "${runid}"_"${marker}"_${ampsize}.html"
+        #### Render a copy in the marker folder.
+        cp "$scripts_dir/7a-MAP_reporting.qmd" . \
+            && quarto render 7a-MAP_reporting.qmd --execute-params params.yaml \
+            || { marker_incomplete "step 12 (HTML report)"; continue; }
+        mv 7a-MAP_reporting.html "$PWD/MAP Report - "${runid}"_"${marker}"_${ampsize}.html"
+        rm -f 7a-MAP_reporting.qmd
 
         #### Tidy up directory
         rm params.yaml temp_mapping*.txt
@@ -1808,6 +1913,13 @@ echo "Finished:   ${end_human}"
 echo "Total Time: $(printf '%02d:%02d:%02d' $HOURS $MINUTES $SECONDS)"
 echo "==============================="
 } >> ./output/pipeline.log
+if [ ${#incomplete_markers[@]} -gt 0 ]; then
+    {
+    echo "Markers NOT completed (their folders are in output/ with an _INCOMPLETE suffix):"
+    printf '  %s\n' "${incomplete_markers[@]}"
+    echo "==============================="
+    } | tee -a ./output/pipeline.log >&2
+fi
 
 mv Demultiplexing_Results_* Individual_Raw_Fastq_Files* *_readcounts.txt metadata* mapping* runinfo.txt name_map.tsv ./output/
 if [ -f "rc_primers_${runid}.txt" ]; then
@@ -1815,5 +1927,5 @@ if [ -f "rc_primers_${runid}.txt" ]; then
 fi
 
 
-
-
+#### Exit non-zero if any marker stopped at a failed step, so scripts that call MAP notice
+[ ${#incomplete_markers[@]} -eq 0 ] || exit 1

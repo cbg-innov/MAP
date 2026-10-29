@@ -1,4 +1,4 @@
-<tool id="map" name="MAP" version="@TOOL_VERSION@+galaxy@VERSION_SUFFIX@" profile="@PROFILE@">
+<tool id="map" name="MAP" version="@TOOL_VERSION@" profile="@PROFILE@">
     <description>Metabarcoding Analysis Pipeline: from sequencer output to OTU tables</description>
     <macros>
         <import>macros.xml</import>
@@ -11,8 +11,11 @@
         (1) stages the Galaxy datasets in the job directory under fixed, space-free
             names (MAP paths cannot contain spaces; paired-end files must be named
             _R1_/_R2_),
-        (2) stages the reference FASTA datasets in a writable folder passed as - -refs
-            (MAP writes a .vsearch index there for BIN matching),
+        (2) stages the reference FASTA datasets in a folder passed as - -refs, together with
+            the BIN index MAP should search (MAP uses <library>*vsearch next to the library
+            and only builds one, about 6 GB and 10 minutes for BOLDistilled, when none is
+            there): the user's BOLD index, a placeholder for "No BIN matching", or nothing
+            when the user chooses to build the index in the job (small libraries only),
         (3) translates $GALAXY_SLOTS into MAP's - -cores_to_leave, and
         (4) copies the run-level outputs to fixed names and discovers the per-marker
             results by pattern.
@@ -35,6 +38,23 @@ ln -s '$parameters' parameters.xlsx &&
     #set $ref_name = re.sub(r'\.(fasta|fas|fa|fna)$', '', $ref_name) + '.fasta'
     ln -s '$ref' 'map_refs/$ref_name' &&
 #end for
+
+## ---- BIN index: MAP searches <library>*vsearch next to the library ----
+## Linked as <library>.vsearch for every staged library; BIN matching only runs for COI-5P.
+#if $bin_cond.bin_mode == 'index'
+    ## A zip that Galaxy did not unpack starts with "PK"; a vsearch UDB starts with "FBDU".
+    if [ "\$(head -c 4 '$bin_cond.bin_udb')" != "FBDU" ] ; then
+        echo "ERROR: the BIN index is not a vsearch UDB file. If it is BOLD's vsearch.zip, upload it again with auto-decompress on (the default), or upload the unzipped file." >&2 ;
+        exit 1 ;
+    fi &&
+    for lib in map_refs/*.fasta ; do ln -s '$bin_cond.bin_udb' "\${lib%.fasta}.vsearch" || exit 1 ; done &&
+#elif $bin_cond.bin_mode == 'none'
+    ## No BIN matching: an index holding one placeholder sequence that matches nothing,
+    ## so MAP's search finishes at once and every BIN is blank, instead of MAP building one.
+    printf '>no_bin_matching|NA\nACGTTGCATGTCGCATGATGCATGAGAGTTGACGTACCTAGGCTAATCGGATCCATGCAATGCCTAGCTTAGGCATCGATCGTAGCATCAGTCAGTACGATCGTACGGTCA\n' > placeholder.fasta &&
+    micromamba run -n map vsearch --makeudb_usearch placeholder.fasta --output placeholder.udb --quiet &&
+    for lib in map_refs/*.fasta ; do ln -s "\$(pwd)/placeholder.udb" "\${lib%.fasta}.vsearch" || exit 1 ; done &&
+#end if
 
 ## ---- reads ----
 #if $mode.type == 'pe'
@@ -84,7 +104,9 @@ micromamba run -n map bash /MAP/SCRIPTS/MAP.sh
     --k_multiplier '$advanced.k_multiplier'
     --BIN_percent_ID '$advanced.BIN_percent_ID'
     --BIN_maxaccepts '$advanced.BIN_maxaccepts'
+    --BIN_maxrejects '$advanced.BIN_maxrejects'
     --BIN_maxhits '$advanced.BIN_maxhits'
+    --sintax_randseed '$advanced.sintax_randseed'
 #end if
     < /dev/null &&
 
@@ -120,6 +142,21 @@ cp map_wd/output/Individual_Raw_Fastq_Files.tar.gz raw_fastqs.tar.gz
         <param name="refs" type="data" format="fasta" multiple="true"
                label="Reference libraries (SINTAX-formatted FASTA)"
                help="One file per 'Reference Library' named in the parameters file. MAP matches each name as the START of a file name, so name the dataset accordingly: e.g. Reference Library 'BOLDistilled_COI_' matches a dataset named 'BOLDistilled_COI_Jul2026_SEQUENCES_sintax.fasta'. Spaces and other special characters in dataset names become '_'."/>
+
+        <conditional name="bin_cond">
+            <param name="bin_mode" type="select" label="BIN matching (COI-5P amplicons of 300 bp or more)"
+                   help="Assigns BOLD BINs to COI-5P OTUs. Needs a BOLD BIN index; choose 'No BIN matching' for other markers or to skip BINs.">
+                <option value="index" selected="true">Use a BOLD BIN index (.udb)</option>
+                <option value="none">No BIN matching</option>
+                <option value="build">Build the index from the reference library during the job (small custom libraries only)</option>
+            </param>
+            <when value="index">
+                <param name="bin_udb" type="data" format="binary" label="BOLD BIN index (.udb)"
+                       help="A vsearch UDB index, e.g. BOLDistilled from BOLD: Upload, then 'Paste/Fetch data' with https://us-sea-1.linodeobjects.com/boldistilled/vsearch.zip (Galaxy unzips it). Your Galaxy may already provide one under Shared Data. BIN taxonomy is taken from the COI reference library above."/>
+            </when>
+            <when value="none"/>
+            <when value="build"/>
+        </conditional>
 
         <param name="sintax_cutoff" type="float" value="0.6" min="0" max="1"
                label="SINTAX confidence cutoff (--sintax_cutoff)"
@@ -160,8 +197,11 @@ cp map_wd/output/Individual_Raw_Fastq_Files.tar.gz raw_fastqs.tar.gz
                        label="Contamination floor multiplier (--k_multiplier)" help="Below 1 is more permissive, above 1 stricter."/>
                 <param name="BIN_percent_ID" type="float" value="0.85" min="0" max="1"
                        label="Minimum identity to keep a BIN match (--BIN_percent_ID)" help="COI-5P amplicons of 300 bp or more only."/>
-                <param name="BIN_maxaccepts" type="integer" value="3" min="1" label="BIN match maxaccepts (--BIN_maxaccepts)"/>
+                <param name="BIN_maxaccepts" type="integer" value="32" min="1" label="BIN match maxaccepts (--BIN_maxaccepts)"/>
+                <param name="BIN_maxrejects" type="integer" value="256" min="1" label="BIN match maxrejects (--BIN_maxrejects)"/>
                 <param name="BIN_maxhits" type="integer" value="3" min="1" label="BIN match maxhits (--BIN_maxhits)"/>
+                <param name="sintax_randseed" type="integer" value="0" min="0" label="SINTAX random seed (--sintax_randseed)"
+                       help="0 leaves SINTAX unseeded. A positive number makes taxonomy confidences reproducible between runs; SINTAX then runs on 1 thread, so this step is slower."/>
             </when>
         </conditional>
     </inputs>
@@ -197,9 +237,11 @@ cp map_wd/output/Individual_Raw_Fastq_Files.tar.gz raw_fastqs.tar.gz
 
     <tests>
         <!--
-          Full end-to-end run of the bundled PHAUS_1K Oxford Nanopore demo (1,000 reads,
-          one COI-5P marker) against a small BOLDistilled subset, so the test needs no
-          1 GB download.
+          Full end-to-end runs of the bundled PHAUS_1K Oxford Nanopore demo (1,000 reads,
+          one COI-5P marker) against a small BOLDistilled subset (665 records), so the tests
+          need no 1 GB library or 6 GB index. bin_index_test.udb is that subset indexed with
+          BOLD-style "ProcessID|BIN" headers (no taxonomy), like BOLD's vsearch.zip, so BIN
+          matching and the taxonomy lookup from the library are tested for real.
         -->
         <test>
             <param name="parameters" value="parameters.xlsx" ftype="xlsx"/>
@@ -208,6 +250,10 @@ cp map_wd/output/Individual_Raw_Fastq_Files.tar.gz raw_fastqs.tar.gz
                 <param name="reads" value="PHAUS_1K_RawReads.fastq.gz" ftype="fastqsanger.gz"/>
             </conditional>
             <param name="refs" value="BOLDistilled_COI_test_sintax.fasta" ftype="fasta"/>
+            <conditional name="bin_cond">
+                <param name="bin_mode" value="index"/>
+                <param name="bin_udb" value="bin_index_test.udb" ftype="binary"/>
+            </conditional>
             <output name="readcounts">
                 <assert_contents>
                     <has_line line="Raw Reads&#9;1000"/>
@@ -224,11 +270,72 @@ cp map_wd/output/Individual_Raw_Fastq_Files.tar.gz raw_fastqs.tar.gz
                     <assert_contents>
                         <has_text text="OTU_ID"/>
                         <has_text text="BIN_Match_Status"/>
+                        <has_text text="BOLD:"/>
+                        <has_text text="BIN_MATCH"/>
+                        <!-- BIN taxonomy filled from the library although the index has none -->
+                        <has_text_matching expression="BOLD:[A-Z0-9]+\t[^\t]+\t[0-9.]+\t[0-9]+\tAnimalia\tArthropoda"/>
                     </assert_contents>
                 </element>
             </output_collection>
             <output_collection name="results_xlsx" type="list" count="1"/>
             <output_collection name="reports_html" type="list" count="1"/>
+        </test>
+        <!-- No BIN matching: the run completes and every BIN is blank. -->
+        <test>
+            <param name="parameters" value="parameters.xlsx" ftype="xlsx"/>
+            <conditional name="mode">
+                <param name="type" value="single"/>
+                <param name="reads" value="PHAUS_1K_RawReads.fastq.gz" ftype="fastqsanger.gz"/>
+            </conditional>
+            <param name="refs" value="BOLDistilled_COI_test_sintax.fasta" ftype="fasta"/>
+            <conditional name="bin_cond">
+                <param name="bin_mode" value="none"/>
+            </conditional>
+            <output_collection name="by_sample" type="list" count="1">
+                <element name="PHAUS_1K_COI-5P_658">
+                    <assert_contents>
+                        <has_text text="BIN_Match_Status"/>
+                        <not_has_text text="BOLD:"/>
+                    </assert_contents>
+                </element>
+            </output_collection>
+            <output_collection name="reports_html" type="list" count="1"/>
+        </test>
+        <!-- Building the index in the job (small custom libraries). -->
+        <test>
+            <param name="parameters" value="parameters.xlsx" ftype="xlsx"/>
+            <conditional name="mode">
+                <param name="type" value="single"/>
+                <param name="reads" value="PHAUS_1K_RawReads.fastq.gz" ftype="fastqsanger.gz"/>
+            </conditional>
+            <param name="refs" value="BOLDistilled_COI_test_sintax.fasta" ftype="fasta"/>
+            <conditional name="bin_cond">
+                <param name="bin_mode" value="build"/>
+            </conditional>
+            <output_collection name="by_sample" type="list" count="1">
+                <element name="PHAUS_1K_COI-5P_658">
+                    <assert_contents>
+                        <has_text text="BOLD:"/>
+                        <has_text text="BIN_MATCH"/>
+                    </assert_contents>
+                </element>
+            </output_collection>
+        </test>
+        <!-- A zip supplied as the BIN index is rejected before MAP runs. -->
+        <test expect_failure="true">
+            <param name="parameters" value="parameters.xlsx" ftype="xlsx"/>
+            <conditional name="mode">
+                <param name="type" value="single"/>
+                <param name="reads" value="PHAUS_1K_RawReads.fastq.gz" ftype="fastqsanger.gz"/>
+            </conditional>
+            <param name="refs" value="BOLDistilled_COI_test_sintax.fasta" ftype="fasta"/>
+            <conditional name="bin_cond">
+                <param name="bin_mode" value="index"/>
+                <param name="bin_udb" value="not_a_udb.zip" ftype="binary"/>
+            </conditional>
+            <assert_stderr>
+                <has_text text="the BIN index is not a vsearch UDB file"/>
+            </assert_stderr>
         </test>
     </tests>
 
@@ -252,6 +359,22 @@ matches. It handles long reads (e.g. Oxford Nanopore) and paired-end short reads
   ``BOLDistilled_COI_Jul2026_SEQUENCES_sintax.fasta``). If a BOLDistilled library is named
   but not supplied, MAP downloads the latest release (~1 GB) during the job, which needs
   internet access on the Galaxy server.
+* *BIN matching* — for COI-5P amplicons of 300 bp or more, a BOLD BIN index (vsearch
+  ``.udb``) to assign BOLD BINs, or *No BIN matching* for other markers or to skip BINs
+  (every BIN column is then blank). *Build the index during the job* is only for small
+  custom COI libraries: for BOLDistilled it needs about 6 GB and 10 minutes per job.
+
+**Getting a BIN index.** Your Galaxy may provide one under *Shared Data*. Otherwise, use
+BOLDistilled from BOLD: open *Upload*, choose *Paste/Fetch data*, and paste
+``https://us-sea-1.linodeobjects.com/boldistilled/vsearch.zip``. Galaxy downloads it
+(about 2 GB) and unzips it to the ~6 GB index; keep auto-decompress on, which is the
+default. Do this once and reuse the dataset. Searching it needs about 7 GB of memory.
+
+BOLD's index holds only each record's Process ID and BIN, so MAP takes the BIN's
+taxonomy (the *BIN Kingdom* to *BIN Species* columns) from the COI reference library
+you supply. The index and the library can come from different BOLDistilled releases;
+records missing from the library then keep their BIN with blank BIN taxonomy, so methods
+sections should list both releases.
 
 **Outputs**
 

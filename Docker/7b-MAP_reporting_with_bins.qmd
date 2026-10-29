@@ -937,64 +937,69 @@ records_BIN<-metabarcode_data_by_sample%>%
   dplyr::summarise(records = n())%>%
   pull(records)
 
-# Give name to the output 
-names(records_BIN) <- "BIN estimate"
+# No OTU matched a BIN at 97.7% or more (e.g. BIN matching switched off): no curve to estimate
+if (length(records_BIN) == 0) {
+  htmltools::p("No OTU matched a BOLD BIN at 97.7% identity or more, so BIN richness cannot be estimated.")
+} else {
+  # Give name to the output 
+  names(records_BIN) <- "BIN estimate"
 
-# iNEXT analysis
-out_abund <- iNEXT(records_BIN,
-                   datatype = "abundance", 
-                   q = 0)
+  # iNEXT analysis
+  out_abund <- iNEXT(records_BIN,
+                     datatype = "abundance", 
+                     q = 0)
 
-# Extract observed value for plot
-obs_value<-out_abund$iNextEst$size_based%>%
-  select(m,Method,qD)%>%
-  filter(Method=='Observed')
+  # Extract observed value for plot
+  obs_value<-out_abund$iNextEst$size_based%>%
+    select(m,Method,qD)%>%
+    filter(Method=='Observed')
 
-# Extract observed value for plot
-extrapolated_value<-tail(out_abund$iNextEst$size_based,1)%>%
-  select(m,Method,qD)
+  # Extract observed value for plot
+  extrapolated_value<-tail(out_abund$iNextEst$size_based,1)%>%
+    select(m,Method,qD)
 
-# Generate plot
-options(scipen = 999) # Convert scientific notation to numbers
+  # Generate plot
+  options(scipen = 999) # Convert scientific notation to numbers
 
-div_plot<-ggiNEXT(out_abund,
-        se=T,
-        type=1,
-        color.var = "Assemblage") +
-  scale_color_manual(values = c('#CC4945'))+
-  theme_bw(base_size = 14)+
-  theme(axis.text.x = element_text(colour = "#011826", 
-                                   hjust = 1),
-        panel.grid.minor.x = element_blank(),
-        panel.grid.major.x = element_blank(),
-        panel.grid.minor.y = element_blank(),
-        legend.position = 'none')+
-   geom_hline(yintercept = round(obs_value$qD,0), 
-             linetype = "dashed", 
-             color = "#011826")+
-  annotate(
-    "text",
-    x = round(obs_value$qD,0)+round(obs_value$qD,0)*0.1,       
-    y = round(obs_value$qD,0)+round(obs_value$qD,0)*0.045,      
-    label = paste("Observed BIN richness: ",round(obs_value$qD,0),sep=''),  
-    color = "#011826",
-    vjust = -0.6    
-  )+
-  geom_hline(yintercept = round(extrapolated_value$qD,0), 
-             linetype = "dashed", 
-             color = "#CC4945")+
-  annotate("text",
-    x = round(extrapolated_value$qD,0)+round(extrapolated_value$qD,0)*0.1,       
-    y = round(extrapolated_value$qD,0)+round(extrapolated_value$qD,0)*0.025,      
-    label = paste("Extrapolated BIN richness: ",round(extrapolated_value$qD,0),sep=''), 
-    color = "#011826",
-    vjust = -0.6)+    
-  labs(title = "",
-    x = "Number of occurrences",
-    y = "BIN richness") 
+  div_plot<-ggiNEXT(out_abund,
+          se=T,
+          type=1,
+          color.var = "Assemblage") +
+    scale_color_manual(values = c('#CC4945'))+
+    theme_bw(base_size = 14)+
+    theme(axis.text.x = element_text(colour = "#011826", 
+                                     hjust = 1),
+          panel.grid.minor.x = element_blank(),
+          panel.grid.major.x = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          legend.position = 'none')+
+     geom_hline(yintercept = round(obs_value$qD,0), 
+               linetype = "dashed", 
+               color = "#011826")+
+    annotate(
+      "text",
+      x = round(obs_value$qD,0)+round(obs_value$qD,0)*0.1,       
+      y = round(obs_value$qD,0)+round(obs_value$qD,0)*0.045,      
+      label = paste("Observed BIN richness: ",round(obs_value$qD,0),sep=''),  
+      color = "#011826",
+      vjust = -0.6    
+    )+
+    geom_hline(yintercept = round(extrapolated_value$qD,0), 
+               linetype = "dashed", 
+               color = "#CC4945")+
+    annotate("text",
+      x = round(extrapolated_value$qD,0)+round(extrapolated_value$qD,0)*0.1,       
+      y = round(extrapolated_value$qD,0)+round(extrapolated_value$qD,0)*0.025,      
+      label = paste("Extrapolated BIN richness: ",round(extrapolated_value$qD,0),sep=''), 
+      color = "#011826",
+      vjust = -0.6)+    
+    labs(title = "",
+      x = "Number of occurrences",
+      y = "BIN richness") 
   
 
-ggplotly(div_plot)
+  ggplotly(div_plot)
+}
 ```
 
 ```{r}

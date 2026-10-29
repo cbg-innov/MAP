@@ -17,8 +17,14 @@ wb2 <- read_excel(file, sheet = "By Replicate")
 wb3 <- read_excel(file, sheet = "Sample Metadata")
 
 # import BIN match results
-df <- read.delim("final_output_with_bin_match.txt", check.names = F, header = FALSE)
-df <- df[,c(1:3,11,12,4:10,13)]
+bin_file <- "final_output_with_bin_match.txt"
+if (file.exists(bin_file) && file.size(bin_file) > 0) {
+  df <- read.delim(bin_file, check.names = F, header = FALSE)
+  df <- df[,c(1:3,11,12,4:10,13)]
+} else {
+  # no OTU had a BIN hit (e.g. no reference within --BIN_percent_ID, or BIN matching switched off): all BIN columns stay blank
+  df <- as.data.frame(matrix(character(0), ncol = 13), stringsAsFactors = FALSE)
+}
 names(df) <- c("Query",
                "BIN BOLD ProcessID",
                "BIN Hit",

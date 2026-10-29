@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 import csv
 import os
 import subprocess
@@ -9,6 +10,7 @@ from Bio import Align, SeqIO
 from Bio.Seq import Seq
 import pandas as pd
 import sys
+from itertools import islice
 
 ref_seq_corr = os.environ["ref_seq_corr"]
 reference_set = os.path.expandvars(os.path.expanduser(ref_seq_corr))
@@ -23,7 +25,8 @@ def _vsearch_best_refs(
     out_tsv: str,
     vsearch_exe: str = "vsearch",
     min_id: float = 0.7,  # newer script used 0.7 to allow more distant matches
-    maxaccepts: int = 1,
+    maxaccepts: int = 32,  # collect up to 32 hits so the closest reference is chosen, not the first found
+    maxrejects: int = 256,
     threads: int = 1,
     maxhits: int = 1,
 ) -> dict:
@@ -38,6 +41,7 @@ def _vsearch_best_refs(
         "--id", str(min_id),
         "--strand", "both",
         "--maxaccepts", str(maxaccepts),
+        "--maxrejects", str(maxrejects),
         "--maxhits", str(maxhits),
         "--threads", str(threads),
     ]
@@ -213,6 +217,55 @@ def homopolymer_length(seq: str, index: int):
                 left_start_index = last_gap_position + 1
 
     return base, placement, homopolymer, left_start_index, right_end_index
+
+MAX_ALIGNMENTS = 100   # co-optimal alignments examined per sequence (v1.1)
+
+def homopolymer_preference(alignment) -> int:
+    """
+    v1.1: score an alignment by how many of its internal gap runs fall in, or next to, a
+    homopolymer of >= 4 identical bases in the aligned query. Terminal gaps are ignored.
+    """
+    coords = alignment.coordinates
+    alignment_length = alignment.shape[1]
+    qry_aligned = alignment[1]
+    gap_runs = []
+    pos = 0
+    for i in range(coords.shape[1] - 1):
+        ref_len = coords[0, i + 1] - coords[0, i]
+        qry_len = coords[1, i + 1] - coords[1, i]
+        if ref_len == 0 or qry_len == 0:
+            gap_len = max(ref_len, qry_len)
+            if pos > 0 and pos + gap_len < alignment_length:
+                gap_runs.append(pos)
+            pos += gap_len
+        else:
+            pos += ref_len
+    score = 0
+    for gap_start in gap_runs:
+        homopolymer = homopolymer_length(qry_aligned, gap_start)[2]
+        if len(homopolymer) >= 4:
+            score += 1
+    return score
+
+def select_alignment(aligner, ref_seq: str, qry_seq: str):
+    """
+    v1.1: among equally high-scoring global alignments, return the first one with the highest
+    homopolymer_preference score. Only the first MAX_ALIGNMENTS are examined, as very divergent
+    sequences can have huge numbers of co-optimal alignments.
+    """
+    alignments = aligner.align(ref_seq, qry_seq)
+    try:
+        n = len(alignments)
+    except OverflowError:          # more co-optimal alignments than fit in an integer
+        n = MAX_ALIGNMENTS + 1
+    if n == 1:
+        return alignments[0]
+    best, best_score = None, -1
+    for alignment in islice(alignments, MAX_ALIGNMENTS):
+        score = homopolymer_preference(alignment)
+        if score > best_score:
+            best, best_score = alignment, score
+    return best
 
 def second_tier_check(seq_name: str, qry_aln_edited: str, indels_not_corrected_list: list):
 
@@ -398,7 +451,7 @@ def run_autocorrect(sampleid, wd):
             row_list.append([seq_name, stop_codon, length_issue, qry_aln_edited_nogaps.upper()])
             continue
 
-        alignment = aligner.align(ref_seq, qry_seq)[0]
+        alignment = select_alignment(aligner, ref_seq, qry_seq)   # v1.1 homopolymer-aware choice
         ref_aln, qry_aln = alignment
 
         # Case 1: exact match (no gaps)
@@ -685,7 +738,7 @@ def run_autocorrect(sampleid, wd):
 
         # do final length filtering AFTER all correction attempts.
         final_seq_length = len(qry_aln_edited_nogaps)
-        if not (640 <= final_seq_length <= 670):
+        if not (640 <= final_seq_length <= 673):   # v1.1: maximum raised from 670
             print(f"Sequence {seq_name} excluded due to length of {final_seq_length} bp.")
             problem_dict[edited_name] = qry_aln_edited_nogaps
             excluded_for_length_count += 1

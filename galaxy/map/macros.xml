@@ -1,18 +1,19 @@
 <macros>
     <!--
-      TOOL_VERSION is the MAP release (git tag vX.Y.Z, GHCR image X.Y.Z) and also
-      selects the container below. On a release tag, CI sets both tokens from the
-      tag (.github/scripts/galaxy_version_from_tag.sh), so releasing needs no edit here:
-          vX.Y.Z           -> X.Y.Z+galaxy0  (new MAP release; push the image first)
-          vX.Y.Z+galaxyN   -> X.Y.Z+galaxyN  (wrapper-only change)
-      The values below are what branch pushes and pull requests are tested with.
+      TOOL_VERSION is the MAP release (git tag vX.Y.Z, GHCR image X.Y.Z); it is also the
+      wrapper's version and selects the container below. On a release tag, CI sets it
+      from the tag (.github/scripts/galaxy_version_from_tag.sh), so releasing needs no
+      edit here; push the image first. A wrapper change is released as a new MAP version.
+      The value below is what branch pushes and pull requests are tested with.
 
       1.1.1 is the first MAP release whose reference check accepts any library
       named in the parameters file (1.1.0 only recognised BOLDistilled files and
       would download BOLDistilled on every Galaxy job).
+      1.2.0 is the first release this wrapper works with: it passes - -BIN_maxrejects,
+      and its "No BIN matching" and BOLD-index options need MAP to handle a BIN search
+      with no hits and an index whose headers carry no taxonomy.
     -->
-    <token name="@TOOL_VERSION@">1.1.1</token>
-    <token name="@VERSION_SUFFIX@">1</token>
+    <token name="@TOOL_VERSION@">1.2.0</token>
     <token name="@PROFILE@">24.0</token>
 
     <xml name="requirements">
@@ -20,8 +21,8 @@
             <!--
               MAP ships as a single self-contained image on GHCR that bundles every
               R/Python/CLI dependency and the COI sequence-correction reference.
-              The SINTAX reference libraries are NOT in the image; they come from the
-              user's history (see the 'refs' input). Pinned to the release version
+              The SINTAX reference libraries and the BIN index are NOT in the image;
+              they come from the user's history (see the 'refs' and 'bin_cond' inputs). Pinned to the release version
               rather than the mutable :latest tag, so each Tool Shed revision is
               reproducible.
             -->

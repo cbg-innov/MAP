@@ -56,6 +56,10 @@ df$Sample <- ifelse(df$Sample %in% names(sample_map),
 
 # Remove any non-sample rows (i.e. positive and negative controls)
 df <- df[df$Sample %in% sample.list,]
+if (nrow(df) == 0) {
+  message(sprintf("No OTUs remain in any sample for %s_%sbp (the marker has only control wells, or every OTU was removed in step 10). No results tables were written.", marker, amp.size))
+  quit(save = "no", status = 2)
+}
 
 # Rename column headers
 names(df) <- c("Sample", "Replicate", "Sample_OTU_Name", "Reads", "Sample_OTU_Sequence", 
@@ -72,7 +76,7 @@ runwide.names <- runwide.names[!duplicated(runwide.names)]
 num_digits <- nchar(length(runwide.names))
 temp.df <- data.frame(
   "OldName" = runwide.names,
-  "NewName" = sprintf(paste0("OTU_%0", num_digits, "d"), 1:length(runwide.names))
+  "NewName" = sprintf(paste0("OTU_%0", num_digits, "d"), seq_along(runwide.names))
 )
 df <- merge(df, temp.df, by.x = "Run_OTU_Name", by.y = "OldName", all.x = TRUE)
 df <- df[,c("Sample", "Replicate", "NewName", "Reads", "Sample_OTU_Name", "Sample_OTU_Length", "Sample_OTU_Ns", "Sample_OTU_Sequence",
@@ -269,7 +273,7 @@ saveWorkbook(wb, sprintf("Metabarcoding Results - %s_%s_%s.xlsx", runid, marker,
 if(marker == "COI-5P" & amp.size >= 300){
   output.fasta <- DNAStringSet(df.summary$OTU_Consensus_Sequence)
   names(output.fasta) <- df.summary$OTU_ID
-  output.fasta <- output.fasta[!duplicated(output.fasta)]
+  output.fasta <- output.fasta[!duplicated(names(output.fasta))]   # one entry per OTU_ID (deduplicating by sequence dropped OTUs sharing a sequence, leaving their BIN columns blank)
   writeXStringSet(output.fasta, "temp_toBIN.fasta")
 }
 

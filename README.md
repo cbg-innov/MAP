@@ -246,7 +246,8 @@ Override paths and advanced parameters at run time (defaults shown):
 | `--componentreads` | [off] | Save per‑OTU component reads. Default is off; component reads not saved. |
 | `--cores_to_leave` | `2` | How many cores to leave free. MAP will use the rest. |
 | `--mem_to_leave` | `2` | How many GB left free inside the container. MAP will use the rest. |
-| `--mem_per_job` | `auto` | This may be edited to manually change the max GB of memory used per job |
+| `--mem_per_job` | `auto` | A number may be entered to manually change the memory provided during clustering per job. `auto` estimates the max GB of memory from the largest sample file. |
+| `--mem_per_job_mult` | `6` | Used if 'mem_per_job' is set to 'auto', not used if mem_per_job is a number. This number is multiplied by the per-job memory estimate from the largest fasta file size. Raising this number will prevent memory spikes during clustering by running fewer jobs in parallel, lowering it will improve MAP performance speed at the risk of high memory usage. |
 | `--ref_seq_corr` | `/MAP/REFS/reference_seqs_327K.fasta` | File used for sequence correction |
 | `--umi_overlap_min` | `0.75` | Multiplier applied to UMI lengths during demultiplexing. We recommend 0.75 for UMIs ≥12 nucleotides, and 1.0 for UMIs <12 nucleotides. |
 | `--primer_overlap_min` | `0.75` | Multiplier applied to primer lengths. We recommend 0.75. |
@@ -270,8 +271,10 @@ Override paths and advanced parameters at run time (defaults shown):
 | `--alpha_quantile` | `0.9` | Quantile of the calculated alpha (contaminated‑reads floor estimate) to use. For Illumina, we recommend 0.8 |
 | `--k_multiplier` | `1` | Contaminant‑floor multiplier (`<1` permissive, `>1` strict). Note: we do not recommend changing this unless widespread contamination occurred. Values over 1 are likely to remove a lot of good data. |
 | `--BIN_percent_ID` | `0.85` | We recommend 0.85 for short‑read data. Threshold to keep matches to BINs in the final database, regardless of 'formal' BIN assignment. Matches below this threshold are labeled "NO MATCH" in the final data. |
-| `--BIN_maxaccepts` | `3` | Parameter fed to VSEARCH's `usearch_global` command. |
+| `--BIN_maxaccepts` | `32` | Parameter fed to VSEARCH's `usearch_global` command. |
+| `--BIN_maxrejects` | `256` | Parameter fed to VSEARCH's `usearch_global` command. |
 | `--BIN_maxhits` | `3` | Parameter fed to VSEARCH's `usearch_global` command. |
+| `--sintax_randseed` | `0` [off] | Positive whole number that seeds SINTAX's bootstrap, so taxonomy confidences are identical between runs with the same seed. When set, SINTAX runs on 1 thread in order to provide reproducible results, so this step takes longer. `0` keeps SINTAX unseeded and multithreaded. |
 | `--overwrite` | [off] | Include flag if you want to replace the contents of the `output/` directory | 
 
 > **Tip (ONT):** raising **Min reads per OTU** is an effective lever for trimming low‑read long‑read error variants and tightening per‑sample richness.

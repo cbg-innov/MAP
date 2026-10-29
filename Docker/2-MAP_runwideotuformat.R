@@ -41,6 +41,36 @@ df.fasta <- data.frame("Run_Wide_OTU_Name" = names(fasta),
 # Centroid join key = bare label to  centroid=<label>;seqs=N;size=SUM.
 df.fasta$Run_Wide_OTU_Centroid <- sub(";.*", "", sub("^centroid=", "", df.fasta$Run_Wide_OTU_Name))
 
+# Merge run-wide OTUs whose consensus sequences are identical.
+# Greedy clustering can start a second cluster around a noisy variant of a haplotype that
+# already has a cluster; its consensus then converges on the same sequence. Each such group
+# becomes the largest cluster (by size=): its members move to that centroid, seqs= and size=
+# are summed, and the duplicate consensus entries are dropped from all_otus_consensus.fasta,
+# so the chimera check, sequence correction, SINTAX and contaminant removal all see one OTU.
+seqs.n <- as.numeric(sub(".*;seqs=([0-9]+).*", "\\1", df.fasta$Run_Wide_OTU_Name))
+size.n <- as.numeric(sub(".*;size=([0-9]+).*", "\\1", df.fasta$Run_Wide_OTU_Name))
+seq.key <- toupper(df.fasta$Run_Wide_OTU_Consensus_Sequence)
+keep.row <- ave(seq_along(seq.key), seq.key, FUN = function(i) i[which.max(size.n[i])])
+if (any(keep.row != seq_along(keep.row))) {
+  # point each sample OTU of a duplicate cluster at the kept centroid
+  centroid.map <- setNames(df.fasta$Run_Wide_OTU_Centroid[keep.row], df.fasta$Run_Wide_OTU_Centroid)
+  df$Run_Wide_OTU_Centroid <- unname(centroid.map[df$Run_Wide_OTU_Centroid])
+  # summed counts go on the kept entry's name (written as plain integers: R would print e.g. 100000 as 1e+05)
+  seqs.sum <- tapply(seqs.n, keep.row, sum)
+  size.sum <- tapply(size.n, keep.row, sum)
+  kept <- as.integer(names(seqs.sum))
+  df.fasta$Run_Wide_OTU_Name[kept] <- mapply(function(nm, s, z) sub(";size=[0-9]+", sprintf(";size=%.0f", z), sub(";seqs=[0-9]+", sprintf(";seqs=%.0f", s), nm)),
+                                             df.fasta$Run_Wide_OTU_Name[kept], seqs.sum, size.sum, USE.NAMES = FALSE)
+  n.merged <- sum(keep.row != seq_along(keep.row))
+  df.fasta <- df.fasta[keep.row == seq_along(keep.row), ]
+  # rewrite the consensus FASTA used by the downstream steps
+  merged.fasta <- DNAStringSet(df.fasta$Run_Wide_OTU_Consensus_Sequence)
+  names(merged.fasta) <- df.fasta$Run_Wide_OTU_Name
+  writeXStringSet(merged.fasta, "all_otus_consensus.fasta", width = 20000)
+  cat(sprintf("   Merged %d run-wide OTUs into %d with identical consensus sequences\n",
+              n.merged, sum(seqs.sum > seqs.n[kept])))
+}
+
 # Component count from the seqs= field by name, not position.
 df.fasta$Run_Wide_OTU_ComponentOTU_Count <- sub(".*;seqs=([0-9]+).*", "\\1", df.fasta$Run_Wide_OTU_Name)
 df.master <- merge(df, df.fasta, by = "Run_Wide_OTU_Centroid", all.x = TRUE)

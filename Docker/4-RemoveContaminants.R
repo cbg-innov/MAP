@@ -65,6 +65,10 @@ if (length(mapping_file) == 1 && !is.na(mapping_file) && file.exists(mapping_fil
 }
 
 df$Well_Type <- ifelse(df$Sample %in% neg_samples, "neg", "sample")
+if (!any(df$Well_Type == "sample")) {
+  message(sprintf("No sample wells have OTUs for %s_%sbp (the marker has only negative-control wells, or its samples yielded no reads). Nothing to clean or report.", marker, ampsize))
+  quit(save = "no", status = 2)
+}
 
 # ----------------------------
 # DETERMINE TOTAL REPLICATES
